@@ -1,0 +1,27 @@
+﻿# HTTP/JSON Built-in Module
+
+Zero-dependency HTTP client and JSON parser.
+
+## Setup
+
+`utohotkey
+#Include <ahk#>
+#Include ..\ext\ahk#.http.ahk
+`
+
+## HTTP
+
+`utohotkey
+response := Http.Get('https://api.github.com/users/octocat')
+Http.Post('https://httpbin.org/post', '{key: value}')
+Http.Download('https://example.com/file.zip', 'C:\Downloads\file.zip')
+`
+
+## JSON
+
+`utohotkey
+name := Json.Query(response, 'login')
+json := Json.Build('name', 'Alice', 'age', '30')
+valid := Json.IsValid('{ok: true}')
+flat := Json.Flatten(response)
+`

@@ -1,0 +1,10 @@
+.vscode/
+*.log
+*.bridge_hash
+*.dll
+*.tmp
+obj/
+bin/
+*.exe
+.ast_hash
+!ahk#.bridge.dll
