@@ -70,11 +70,11 @@ Result: **ZERO dependency installs** on any supported Windows version.
 AHK#/
 ├── lib/
 │   ├── ahk#.ahk              ← Main library (include this)
-│   └── ahk#.bridge.dll       ← Auto-compiled bridge DLL
+│   ├── ahk#.bridge.dll       ← Auto-compiled bridge DLL
+│   └── build.ps1             ← Build script
 ├── src/
 │   ├── bridge/
 │   │   ├── AhkSharpBridge.cs  ← Core bridge C# source
-│   │   └── build.ps1          ← Build script
 │   └── swarm/
 │       ├── MemoryMappedIpc.cs  ← IPC extension
 │       ├── NativeUi.cs         ← WinForms embedding
