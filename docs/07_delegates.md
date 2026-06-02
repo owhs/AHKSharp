@@ -4,7 +4,7 @@ Subscribe to .NET events using AHK functions as handlers.
 
 ## Usage
 
-`utohotkey
+```Autohotkey
 ; Wrap an AHK function as a C# delegate
 watcher := CS.System.IO.FileSystemWatcher('C:\MyFolder', '*.txt')
 watcher.On('Created', (args) => MsgBox('New file: ' args))
@@ -14,7 +14,7 @@ watcher.EnableRaisingEvents := true
 timer := CS.System.Timers.Timer(1000)
 timer.On('Elapsed', (*) => ToolTip(A_Now))
 timer.Start()
-`
+```
 
 ## How It Works
 

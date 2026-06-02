@@ -1,11 +1,11 @@
 ﻿# C# Version Targeting
 
-`utohotkey
+```Autohotkey
 class Modern extends _CSModule {
     static CSVersion := '7.3'
     static CSharp := '...'
 }
-`
+```
 
 ## Available Versions
 
