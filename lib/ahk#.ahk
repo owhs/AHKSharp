@@ -227,6 +227,20 @@ class CS {
         }
         return refs
     }
+
+    ; ── CS.LoadAssembly — Load a custom .NET assembly dynamically ─────────
+    static LoadAssembly(assemblyPath) {
+        bridge := _AhkSharpEngine.Boot()
+        bridge.LoadAssembly(assemblyPath)
+    }
+
+    ; ── CS.CreateObject — Instantiate a .NET object from an assembly ────────
+    static CreateObject(typeName, assemblyPath := "") {
+        if (assemblyPath != "") {
+            CS.LoadAssembly(assemblyPath)
+        }
+        return CS(typeName)()
+    }
 }
 
 ;; ── _CSNamespace — Phantom Namespace Builder ─────────────────────────────────
@@ -714,8 +728,8 @@ class _CSModule {
 
     static __New() {
         ; ── Check for precompiled DLL first ──────────────────────────────
-        try {
-            if (this.HasOwnProp("PrecompiledDLL") && this.PrecompiledDLL != "") {
+        if (this.HasOwnProp("PrecompiledDLL") && this.PrecompiledDLL != "") {
+            try {
                 bridge := _AhkSharpEngine.Boot()
                 this._className := RegExReplace(this.Prototype.__Class, "\..*$", "")
                 result := bridge.LoadPrecompiled(this.PrecompiledDLL)
@@ -725,6 +739,8 @@ class _CSModule {
                 if (parts.Length > 1 && parts[2] != "")
                     this._className := parts[2]
                 return
+            } catch as err {
+                throw Error("Failed to load precompiled DLL: " this.PrecompiledDLL "`n" err.Message)
             }
         }
 
@@ -1158,3 +1174,4 @@ CSType := _CSType
 CSNamespace := _CSNamespace
 CSNuGet := _CSNuGet
 CSDelegate := _CSDelegate
+AHKSharp := CS
