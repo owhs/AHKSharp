@@ -1,4 +1,4 @@
-﻿;; AHK# Example 34 — C# Version Targeting
+﻿;; AHK# — C# Version Targeting
 ;; Use the CSVersion property to compile with newer C# syntax.
 ;; On first use, Roslyn compiler is auto-downloaded from NuGet (~10MB, one-time).
 ;;

@@ -1,4 +1,15 @@
-;; AHK# SQLite Extension — Zero-dependency SQLite via winsqlite3.dll
+;; AHK# SQLite Extension — Zero-dependency SQLite via winsqlite3.dll (Windows 10+)
+;;
+;;   db := SQLite()                                   ; ":memory:"  (or SQLite("C:\data\app.db"))
+;;   db.Execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, score REAL)")
+;;   db.Execute("INSERT INTO t (name, score) VALUES (?, ?)", "ünïcode ✓", 9.5)
+;;   for row in db.Query("SELECT name, score FROM t")   ; Array of Map, keyed by column name
+;;       MsgBox row["name"] " = " row["score"]
+;;   n := db.Scalar("SELECT COUNT(*) FROM t")
+;;   db.Transaction(() => ...)                        ; commits, or rolls back if the function throws
+;;
+;; Text is UTF-8 in and out; parameters are bound with SQLITE_TRANSIENT (SQLite copies them).
+;; NULL comes back as "".
 
 #Requires AutoHotkey v2.0
 
@@ -9,15 +20,17 @@ class SQLite {
         this._db.Open(path)
     }
 
+    ; Runs a statement; returns the number of rows changed
     Execute(sql, params*) {
         if params.Length > 0
             return this._db.Execute(sql, _PackArgs(params))
         return this._db.ExecuteNonQuery(sql)
     }
 
+    ; Array of Map (column name → value). One COM call returns the whole result set.
     Query(sql, params*) {
-        raw := this._db.Query(sql, params.Length > 0 ? _PackArgs(params) : "")
-        return this._ParseQueryResult(raw)
+        raw := this._db.QueryRows(sql, params.Length > 0 ? _PackArgs(params) : "")
+        return SQLite._ToRows(_SafeArrayToAHK(raw))
     }
 
     Scalar(sql, params*) {
@@ -47,47 +60,19 @@ class SQLite {
         try this._db.Dispose()
     }
 
-    _ParseQueryResult(raw) {
-        results := []
-        if !IsObject(raw)
-            return results
-        try {
-            ; Probe column count by reading row 0 until error
-            colCount := 0
-            Loop {
-                try {
-                    raw[0, A_Index - 1]
-                    colCount++
-                } catch
-                    break
-            }
-            if (colCount = 0)
-                return results
-
-            ; Read headers from row 0
-            headers := []
-            Loop colCount
-                headers.Push(raw[0, A_Index - 1])
-
-            ; Read data rows starting from row 1 until error
-            rowIdx := 1
-            Loop {
-                try {
-                    raw[rowIdx, 0]  ; probe if row exists
-                } catch
-                    break
-                rowMap := Map()
-                Loop colCount {
-                    col := A_Index - 1
-                    try
-                        rowMap[headers[col + 1]] := raw[rowIdx, col]
-                    catch
-                        rowMap[headers[col + 1]] := ""
-                }
-                results.Push(rowMap)
-                rowIdx++
-            }
+    ; [headers, row1, row2 ...] → [Map, Map ...]
+    static _ToRows(table) {
+        rows := []
+        if (table.Length < 1)
+            return rows
+        headers := table[1]
+        Loop table.Length - 1 {
+            row := table[A_Index + 1]
+            m := Map()
+            for i, h in headers
+                m[h] := row[i]
+            rows.Push(m)
         }
-        return results
+        return rows
     }
 }

@@ -1,5 +1,5 @@
-﻿;; AHK# Example 08 — Native .NET UI Controls
-;; Embed WinForms DataGridView, RichTextBox, and Panel inside an AHK Gui.
+﻿;; AHK# — Native .NET UI Controls
+;; Embed WinForms DataGridView and RichTextBox controls inside an AHK Gui.
 
 #Requires AutoHotkey v2.0
 #SingleInstance Force
@@ -20,17 +20,17 @@ myGui.AddText("x15 y10 w560 h25 c0x00d4ff", "═══ AHK# Native UI Demo ═�
 ; 2. DataGridView — Full .NET Grid inside AHK
 ; ══════════════════════════════════════════════════════════════════════════════
 
-myGui.AddText("x15 y40 w200 h20 c0xaaaaaa", "▸ .NET DataGridView:")
+myGui.AddText("x15 y40 w400 h20 c0xaaaaaa", "▸ .NET DataGridView (sample data):")
 
-myGui.Show("w590 h550")
+myGui.Show("w590 h465")
 
 grid := NativeUI.DataGridView(myGui, 15, 65, 560, 180)
 grid.AddColumn("Name", "Project Name")
 grid.AddColumn("Language", "Language")
-grid.AddColumn("Stars", "★ Stars")
+grid.AddColumn("Stars", "★ Stars (sample)")
 grid.AddColumn("Status", "Status")
 
-; Populate with data
+; Populate with sample data (the star counts are illustrative, not live figures)
 grid.AddRow("AHK#", "AHK2 / C#", "1,500", "Active")
 grid.AddRow("AutoHotkey v2", "C++", "8,900", "Active")
 grid.AddRow("Visual Studio Code", "TypeScript", "165,000", "Active")
@@ -66,13 +66,6 @@ btnGetCell.OnEvent("Click", GetCell)
 btnGetText := myGui.AddButton("x435 y415 w140 h30", "Get RTB Text")
 btnGetText.OnEvent("Click", GetRTBText)
 
-; ══════════════════════════════════════════════════════════════════════════════
-; 5. Status Panel
-; ══════════════════════════════════════════════════════════════════════════════
-
-myGui.AddText("x15 y460 w200 h20 c0xaaaaaa", "▸ Status Panel:")
-panel := NativeUI.Panel(myGui, 15, 485, 560, 50)
-
 ; ── Event Handlers ──────────────────────────────────────────────────────────
 
 AddRow(*) {
@@ -83,7 +76,7 @@ AddRow(*) {
 
 ClearGrid(*) {
     grid.Clear()
-    ; Re-add headers
+    ; Clearing removes all rows (the columns stay), so put one sample row back
     grid.AddRow("AHK#", "AHK2 / C#", "1,500", "Active")
 }
 

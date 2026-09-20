@@ -1,4 +1,7 @@
-﻿;; AHK# Example 03 — Async/Await & Parallel Computation
+﻿;; AHK# — Async/Await & Parallel Computation
+;; Run C# code on the .NET ThreadPool with Module.Async.Method(...).
+;; You get a promise back: .Await() waits (while AHK keeps pumping messages),
+;; .Then() / .Catch() attach callbacks.
 
 #Requires AutoHotkey v2.0
 #SingleInstance Force
@@ -34,6 +37,7 @@ class HeavyCompute extends _CSModule {
     )"
 }
 
+; ── 1. Single async call, awaited ─────────────────────────────────────────────
 MsgBox("Starting Monte Carlo Pi estimation (10M iterations)...`nThis runs on a .NET ThreadPool thread.", "AHK# Async")
 
 promise := HeavyCompute.Async.MonteCarloPi(10000000)
@@ -42,12 +46,7 @@ pi := promise.Await()
 ToolTip("")
 MsgBox("Monte Carlo Pi ≈ " pi, "AHK# — Async Result")
 
-; Fire-and-forget with Then/Catch callbacks
-HeavyCompute.Async.SumPrimes(100000)
-    .Then((result) => MsgBox("Sum of primes up to 100,000 = " result, "AHK# — Callback Result"))
-    .Catch((err) => MsgBox("Error: " err.Message, "AHK# — Error"))
-
-; Multiple parallel tasks
+; ── 2. Multiple parallel tasks (timed) ────────────────────────────────────────
 t := A_TickCount
 p1 := HeavyCompute.Async.SumPrimes(50000)
 p2 := HeavyCompute.Async.SumPrimes(75000)
@@ -64,6 +63,35 @@ MsgBox("3 parallel tasks completed in " elapsed "ms:`n"
     . "  MonteCarloPi(5M) ≈ " r3
     , "AHK# — Parallel Results")
 
-Sleep(3000)
-ExitApp()
+; ── 3. Callbacks with Then / Catch ────────────────────────────────────────────
+; Done after the timing block above so the callback cannot skew "elapsed".
+thenFired := false
 
+OnSumDone(result) {
+    global thenFired := true
+    ToolTip("Then callback: sum of primes up to 100,000 = " result)
+}
+
+OnSumFailed(err) {
+    global thenFired := true
+    ToolTip("Catch callback: " err.Message)
+}
+
+sumPromise := HeavyCompute.Async.SumPrimes(100000)
+sumPromise.Then(OnSumDone)          ; Then / Catch return NEW promises: keep sumPromise for Await
+sumPromise.Catch(OnSumFailed)
+
+; Await the original promise instead of sleeping a fixed time: it returns as soon as
+; the work is done, and keeps pumping messages so the callback can run.
+total := sumPromise.Await()
+Loop 50 {                       ; the callback is queued, give AHK a moment to run it
+    if (thenFired)
+        break
+    Sleep(10)
+}
+
+MsgBox("SumPrimes(100K) = " total "`nThen callback fired: " (thenFired ? "yes (see tooltip)" : "no")
+    , "AHK# — Callback Result")
+ToolTip("")
+
+ExitApp()

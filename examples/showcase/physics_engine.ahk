@@ -1,6 +1,7 @@
-﻿;; AHK# Example 20 — Native 2D Physics Engine (1000 FPS calculation)
-;; C# handles the math and directly renders onto the AHK GUI via System.Drawing!
-;; Blazing fast, zero flickering, purely native performance.
+﻿;; AHK# — Native 2D Physics Engine
+;; C# handles the math and renders directly onto an AHK Picture control via System.Drawing.
+;; Frames are drawn to an off-screen bitmap first (double buffering), then blitted in
+;; one call, so there is no flicker. The AHK loop below runs at roughly 100 frames/second.
 
 #Requires AutoHotkey v2.0
 #SingleInstance Force
@@ -75,7 +76,7 @@ class PhysicsEngine extends _CSModule {
                     bg.FillEllipse(Brushes.SpringGreen, x - r, y - r, r * 2, r * 2);
                 }
                 
-                // Blit to screen (Zero flicker)
+                // Blit to screen in a single call
                 g.DrawImage(bmp, 0, 0);
             }
         }
@@ -96,12 +97,16 @@ pic := g.Add("Picture", "x0 y0 w" WinWidth " h" WinHeight " BackgroundTrans")
 
 g.Show("w" WinWidth " h" WinHeight)
 
+; GUI sizes are DPI-scaled, but System.Drawing works in real pixels. Ask the control
+; for its actual pixel size so the bitmap covers it exactly at any DPI setting.
+pic.GetPos(, , &picW, &picH)
+
 ; Initialize the C# Engine
 PhysicsEngine.Init(200) ; 200 bouncing balls!
 
 ; ── Game Loop ──
 Loop {
-    ; C# handles the math AND rendering flawlessly onto our Picture control HWND!
-    PhysicsEngine.StepAndDraw(pic.Hwnd, WinWidth, WinHeight)
-    Sleep(10) ; Limit to ~100 FPS
+    ; C# steps the simulation AND draws onto our Picture control HWND
+    PhysicsEngine.StepAndDraw(pic.Hwnd, picW, picH)
+    Sleep(10) ; ~100 FPS at most
 }

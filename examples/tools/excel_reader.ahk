@@ -5,7 +5,7 @@
 ;;
 ;; Usage:
 ;;   sheets := Excel.ListSheets("data.xlsx")
-;;   data := Excel.ReadSheet("data.xlsx", "Sheet1")
+;;   data := Excel.ReadSheet("data.xlsx", "Sheet1", 500)   ; max rows, 0 = all rows
 ;;   cell := Excel.ReadCell("data.xlsx", "Sheet1", "B3")
 ;;   Excel.CreateWorkbook("output.xlsx")
 ;;   Excel.WriteCell("output.xlsx", "Sheet1", "A1", "Hello")
@@ -16,8 +16,15 @@
 
 ; ── CSModule: Excel ───────────────────────────────────────────────────────────
 
+; System.IO.Packaging lives in WindowsBase.dll, which sits in the WPF folder of the .NET
+; Framework (not on the compiler's default search path). Build the path from A_WinDir.
+ExcelWindowsBaseRef() {
+    p := A_WinDir "\Microsoft.NET\Framework64\v4.0.30319\WPF\WindowsBase.dll"
+    return FileExist(p) ? p : "WindowsBase.dll"
+}
+
 class Excel extends _CSModule {
-    static References := "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\WindowsBase.dll"
+    static References := ExcelWindowsBaseRef()
     static CSharp := '
     (
         using System;
@@ -46,7 +53,8 @@ class Excel extends _CSModule {
             }
         }
 
-        public static string ReadSheet(string path, string sheetName) {
+        // maxRows <= 0 means "no limit". When rows are cut off, the last line says so.
+        public static string ReadSheet(string path, string sheetName, int maxRows) {
             using (var pkg = Package.Open(path, FileMode.Open, FileAccess.Read)) {
                 int sheetIndex = GetSheetIndex(pkg, sheetName);
                 if (sheetIndex < 0) return "Error: Sheet not found: " + sheetName;
@@ -89,15 +97,18 @@ class Excel extends _CSModule {
                     if (r > maxRow) maxRow = r;
                 }
 
-                for (int r = 1; r <= maxRow && r <= 500; r++) {
+                int lastRow = (maxRows > 0 && maxRows < maxRow) ? maxRows : maxRow;
+                for (int r = 1; r <= lastRow; r++) {
                     var cols = new List<string>();
                     for (int c = 1; c <= maxCol; c++) {
                         string key = ColName(c) + r.ToString();
                         string v;
                         cols.Add(data.TryGetValue(key, out v) ? v : "");
                     }
-                    sb.AppendLine(string.Join("\t", cols));
+                    sb.AppendLine(string.Join("\t", cols.ToArray()));
                 }
+                if (lastRow < maxRow)
+                    sb.AppendLine("... [truncated: showing " + lastRow + " of " + maxRow + " rows - raise Max rows (0 = all) to see more]");
                 return sb.ToString().TrimEnd();
             }
         }
@@ -131,7 +142,7 @@ class Excel extends _CSModule {
         }
 
         public static string GetHeaders(string path, string sheetName) {
-            string sheet = ReadSheet(path, sheetName);
+            string sheet = ReadSheet(path, sheetName, 1);
             if (sheet.StartsWith("Error:")) return sheet;
             int nl = sheet.IndexOf((char)10);
             return nl > 0 ? sheet.Substring(0, nl).TrimEnd() : sheet;
@@ -392,6 +403,10 @@ btnWrite := g.Add("Button", "x457 y115 w38 h26", Chr(0x270F))
 ; Data view
 g.SetFont("s10 cF38BA8")
 g.Add("Text", "x15 y148", Chr(0x25CF) " Sheet Data")
+g.SetFont("s9 cCDD6F4", "Segoe UI")
+g.Add("Text", "x290 y148", "Max rows:")
+maxRowsEdit := g.Add("Edit", "x352 y145 w60 h22 Number Background0x313244 cCDD6F4", "500")
+g.Add("Text", "x418 y148 c585B70", "(0 = all)")
 g.SetFont("s8", "Cascadia Mono")
 dataEdit := g.Add("Edit", "x15 y168 w480 h230 Multi ReadOnly Background0x181825 cA6E3A1 HScroll VScroll")
 
@@ -429,7 +444,13 @@ LoadSheet() {
     global currentFile
     if (currentFile == "" || sheetDD.Text == "")
         return
-    data := Excel.ReadSheet(currentFile, sheetDD.Text)
+    ; Row limit is a visible setting (0 = read every row); the reader appends a
+    ; "[truncated: showing N of M rows]" line when it cuts the sheet off.
+    try
+        maxRows := Max(0, Integer(maxRowsEdit.Value))
+    catch
+        maxRows := 500
+    data := Excel.ReadSheet(currentFile, sheetDD.Text, maxRows)
     dataEdit.Value := data
 }
 
@@ -446,6 +467,28 @@ WriteCell() {
     global currentFile
     if (currentFile == "" || sheetDD.Text == "")
         return
+
+    ; Writing rewrites the sheet XML inside the .xlsx in place: offer a backup copy first
+    ; (asked once per file per session).
+    static backupDecided := Map()
+    if !backupDecided.Has(currentFile) {
+        answer := MsgBox("Write changes directly into this workbook?`n`n" currentFile
+            . "`n`nYes = make a backup copy first (recommended)`nNo = write without a backup`nCancel = do nothing",
+            "Backup before writing", "YesNoCancel Icon?")
+        if (answer == "Cancel")
+            return
+        if (answer == "Yes") {
+            bak := currentFile ".bak"
+            if FileExist(bak)
+                bak := currentFile "." A_Now ".bak"      ; never overwrite an older backup
+            try FileCopy(currentFile, bak)
+            catch as err
+                return MsgBox("Could not create the backup, nothing was written:`n" err.Message, "Backup failed", "Icon!")
+            cellResult.Value := "Backup: " bak
+        }
+        backupDecided[currentFile] := true
+    }
+
     Excel.WriteCell(currentFile, sheetDD.Text, cellEdit.Value, writeVal.Value)
     cellResult.Value := "Written: " writeVal.Value
     LoadSheet() ; Refresh view

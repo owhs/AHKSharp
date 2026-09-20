@@ -1,4 +1,4 @@
-﻿;; AHK# Example 02 — CSModule Paradigm
+﻿;; AHK# — CSModule Paradigm
 ;; Embed C# code directly in AHK classes. Methods compile once and cache.
 
 #Requires AutoHotkey v2.0

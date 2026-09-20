@@ -79,7 +79,7 @@ class Http extends _CSModule {
         private static WebClient CreateClient(string customHeaders) {
             var client = new WebClient();
             client.Encoding = Encoding.UTF8;
-            client.Headers.Add("User-Agent", "AHK-Sharp/2.0");
+            client.Headers.Add("User-Agent", "AHK-Sharp/1.0");
             if (!string.IsNullOrEmpty(customHeaders)) {
                 string[] headerLines = customHeaders.Split(new string[] {"\n"}, StringSplitOptions.RemoveEmptyEntries);
                 foreach (var line in headerLines) {
@@ -118,10 +118,10 @@ class Json extends _CSModule {
                     var dict = (Dictionary<string, object>)current;
                     if (!dict.TryGetValue(seg, out current))
                         return "";
-                } else if (current is object[]) {
-                    var arr = (object[])current;
+                } else if (current is System.Collections.IList) {
+                    var arr = (System.Collections.IList)current;
                     int idx;
-                    if (int.TryParse(seg, out idx) && idx >= 0 && idx < arr.Length)
+                    if (int.TryParse(seg, out idx) && idx >= 0 && idx < arr.Count)
                         current = arr[idx];
                     else
                         return "";

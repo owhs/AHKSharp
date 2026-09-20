@@ -1,4 +1,4 @@
-﻿;; AHK# Example 01 — Hello .NET
+﻿;; AHK# — Hello .NET
 ;; Demonstrates basic CLR interop: static methods, constructors, fluid chaining.
 
 #Requires AutoHotkey v2.0
@@ -37,5 +37,5 @@ MsgBox("Regex match: " match.Value, "AHK# — Regex")
 guid := CS.System.Guid.NewGuid()
 MsgBox("New GUID: " guid, "AHK# — Guid")
 
-MsgBox("All Phase 1 basic tests passed!", "AHK# — Complete", 0x40)
+MsgBox("That's the basics: static calls, constructors, properties and regex, all straight from AHK.", "AHK# — Complete", 0x40)
 ExitApp()

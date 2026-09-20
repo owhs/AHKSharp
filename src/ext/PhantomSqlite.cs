@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -64,6 +65,20 @@ public class PhantomSqlite : IDisposable
     private const int SQLITE_TEXT = 3;
     private const int SQLITE_BLOB = 4;
     private const int SQLITE_NULL = 5;
+
+    // SQLite hands back UTF-8; Marshal.PtrToStringAnsi would mangle every non-ASCII character
+    private static string Utf8(IntPtr p)
+    {
+        if (p == IntPtr.Zero) return null;
+        int len = 0;
+        while (Marshal.ReadByte(p, len) != 0) len++;
+        byte[] bytes = new byte[len];
+        Marshal.Copy(p, bytes, 0, len);
+        return Encoding.UTF8.GetString(bytes);
+    }
+
+    // SQLITE_TRANSIENT: SQLite must COPY bound text — the managed buffer is unpinned as soon as the call returns
+    private static readonly IntPtr SQLITE_TRANSIENT = new IntPtr(-1);
 
     private IntPtr _db;
     private bool _disposed;
@@ -137,7 +152,7 @@ public class PhantomSqlite : IDisposable
             // Column names
             string[] header = new string[colCount];
             for (int i = 0; i < colCount; i++)
-                header[i] = Marshal.PtrToStringAnsi(sqlite3_column_name(stmt, i)) ?? "";
+                header[i] = Utf8(sqlite3_column_name(stmt, i)) ?? "";
             rows.Add(header);
 
             // Data rows
@@ -156,11 +171,11 @@ public class PhantomSqlite : IDisposable
                             row[i] = sqlite3_column_int64(stmt, i).ToString();
                             break;
                         case SQLITE_FLOAT:
-                            row[i] = sqlite3_column_double(stmt, i).ToString("R");
+                            row[i] = sqlite3_column_double(stmt, i).ToString("R", CultureInfo.InvariantCulture);
                             break;
                         default:
                             IntPtr textPtr = sqlite3_column_text(stmt, i);
-                            row[i] = textPtr != IntPtr.Zero ? Marshal.PtrToStringAnsi(textPtr) : "";
+                            row[i] = textPtr != IntPtr.Zero ? Utf8(textPtr) : "";
                             break;
                     }
                 }
@@ -181,6 +196,24 @@ public class PhantomSqlite : IDisposable
         }
     }
 
+    /// <summary>
+    /// Query and return the result as object[]: element 0 is the column-name string[], the rest are the
+    /// rows (string[], NULL = null). One COM call, read straight out of memory by ext\ahk#.sqlite.ahk.
+    /// </summary>
+    public object[] QueryRows(string sql, object args)
+    {
+        string[,] grid = Query(sql, args);
+        int rows = grid.GetLength(0), cols = grid.GetLength(1);
+        object[] result = new object[rows];
+        for (int r = 0; r < rows; r++)
+        {
+            string[] row = new string[cols];
+            for (int c = 0; c < cols; c++) row[c] = grid[r, c];
+            result[r] = row;
+        }
+        return result;
+    }
+
     /// <summary>Query returning just a single scalar value.</summary>
     public string QueryScalar(string sql, object args)
     {
@@ -192,7 +225,7 @@ public class PhantomSqlite : IDisposable
             if (sqlite3_step(stmt) == SQLITE_ROW)
             {
                 IntPtr textPtr = sqlite3_column_text(stmt, 0);
-                return textPtr != IntPtr.Zero ? Marshal.PtrToStringAnsi(textPtr) : "";
+                return textPtr != IntPtr.Zero ? Utf8(textPtr) : "";
             }
             return null;
         }
@@ -260,7 +293,7 @@ public class PhantomSqlite : IDisposable
         else
         {
             byte[] utf8 = Encoding.UTF8.GetBytes(value.ToString() + "\0");
-            sqlite3_bind_text(stmt, index, utf8, utf8.Length - 1, IntPtr.Zero);
+            sqlite3_bind_text(stmt, index, utf8, utf8.Length - 1, SQLITE_TRANSIENT);
         }
     }
 
@@ -268,7 +301,7 @@ public class PhantomSqlite : IDisposable
     {
         if (_db == IntPtr.Zero) return "Database not open";
         IntPtr errPtr = sqlite3_errmsg(_db);
-        return errPtr != IntPtr.Zero ? Marshal.PtrToStringAnsi(errPtr) : "Unknown error";
+        return errPtr != IntPtr.Zero ? Utf8(errPtr) : "Unknown error";
     }
 
     public void Dispose()

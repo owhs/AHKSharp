@@ -2,30 +2,49 @@
 
 ## Installation
 
-1. **Clone or download** the AHK# repository
-2. **Run any example**: `AutoHotkey.exe examples\01_hello_dotnet.ahk`
-3. The bridge DLL auto-compiles on first run via `build.ps1`
+1. **Clone or download** the AHK# repository.
+2. **Run an example**: `AutoHotkey64.exe examples\basics\hello_dotnet.ahk`
+3. That is all. `lib\ahk#.bridge.dll` is committed, so nothing is compiled on a normal first run.
 
-No admin rights, no Visual Studio, no NuGet CLI required.
+If the DLL is missing, `Boot()` runs `powershell -NoProfile -ExecutionPolicy Bypass -File lib\build.ps1` for you. That needs `csc.exe` from the .NET Framework 4.x (present on every supported Windows). Two related switches:
+
+- Environment variable `AHKSHARP_DEV=1` makes every start run `build.ps1`. It hashes `src\*.cs`, so it is a no-op when nothing changed. Use it while editing the bridge sources.
+- Rebuild manually with `powershell -File lib\build.ps1 -Force` (add `-Verbose` to see the compiler command; compiler warnings are always printed).
+
+No admin rights, no Visual Studio, no NuGet CLI.
 
 ## Requirements
 
 | Requirement | Details |
 |-------------|---------|
-| AutoHotkey | v2.0+ |
+| AutoHotkey | v2.0+ (32- or 64-bit: the CLR takes the bitness of the exe you run) |
 | Windows | 7 SP1+ / 8 / 8.1 / 10 / 11 |
 | .NET Framework | 4.0+ (pre-installed on all supported Windows) |
-| Disk space | ~60KB for bridge DLL |
+| Disk space | about 80 KB for the bridge DLL |
+
+## Including the library
+
+`#Include` paths are relative to the script that contains the line:
+
+```autohotkey
+#Include lib\ahk#.ahk               ; script in the repository root
+#Include ..\..\lib\ahk#.ahk         ; script in examples\<category>\ (what every example does)
+#Include ..\..\ext\ahk#.sqlite.ahk  ; optional extension, same relative idea
+```
+
+`#Include <ahk#>` (the form in the header comment of `lib\ahk#.ahk`) only works when the folder that contains `ahk#.ahk` is on AutoHotkey's Lib search path: `<script folder>\Lib`, `Documents\AutoHotkey\Lib`, or the `Lib` folder of the AutoHotkey install. The library loads `ahk#.bridge.dll` from the folder it lives in, so the DLL (and `build.ps1`) must sit next to `ahk#.ahk` there. A relative path is simpler.
+
+All snippets in these docs use `#Include lib\ahk#.ahk`; adjust the prefix for where your script lives.
 
 ## Your First Script
 
 ```autohotkey
 #Requires AutoHotkey v2.0
-#Include <ahk#>
+#Include lib\ahk#.ahk
 
 ; Call any .NET method
 result := CS.System.Math.Pow(2, 10)
-MsgBox("2^10 = " result)    ; → 1024
+MsgBox("2^10 = " result)    ; → 1024.0 (Pow returns a Double)
 
 ; Create .NET objects
 sb := CS.System.Text.StringBuilder()
@@ -37,65 +56,118 @@ guid := CS.Eval("Guid.NewGuid().ToString()")
 MsgBox("GUID: " guid)
 ```
 
+**Editor completion.** `CS.System.Text.StringBuilder` is resolved at run time, so an editor knows nothing about it until you run `CS.Declare("System.Text.StringBuilder")` once; then VS Code (with the AutoHotkey v2 language server) offers completion, hover and signature help for those types ([Editor Support](21_editor_support.md)). Ask AHK# itself at any time with `CS.Members(CS.System.Math, "abs")` / `CS.Types("System.IO")`; a misspelled name is answered with `Did you mean ...?`.
+
 ## How It Works
 
-1. **CLR Bootstrap**: AHK loads `mscoree.dll` and starts the .NET CLR v4.0.30319
-2. **Bridge Load**: `AhkSharpBridge.dll` is loaded into the default AppDomain
-3. **COM Interface**: AHK communicates with the bridge via IDispatch (COM automation)
-4. **Reflection**: The bridge uses `System.Reflection` to invoke any .NET type
+1. **CLR bootstrap**: `_AhkSharpEngine.Boot()` calls `mscoree!CorBindToRuntimeEx("v4.0.30319")`, starts the runtime and gets the default AppDomain.
+2. **Bridge load**: the bridge DLL (`lib\ahk#.bridge.dll`, or `CS.Config.BridgeDll`) is hashed (SHA-256) and compared with `AHK_SHARP_BRIDGE_SHA256` in `ahk#.ahk`; on a match it is read into a byte array and loaded with `Assembly.Load(byte[])`. A mismatch throws ([Security](19_security.md)).
+3. **Bridge object**: `CreateInstance("AhkSharpBridge")` creates the COM-visible singleton. AHK talks to it through IDispatch.
+4. **Reflection**: the bridge resolves types and picks overloads with `System.Reflection`.
 
 ```
-Your AHK Script
-  → #Include <ahk#>
-    → _AhkSharpEngine.Boot()
-      → mscoree.dll (CorBindToRuntimeEx)
-        → CLR v4.0.30319 AppDomain
-          → AhkSharpBridge (COM-visible singleton)
-            → TypeResolver + MarshalEngine + RuntimeCompiler
+Your AHK script
+  → #Include lib\ahk#.ahk
+    → _AhkSharpEngine.Boot()                      (first use, about 100 ms)
+      → CorBindToRuntimeEx → Assembly.Load(byte[]) → CreateInstance("AhkSharpBridge")
+        → TypeResolver + OverloadBinder + MarshalEngine + RuntimeCompiler + ...
 ```
+
+The first call to anything in `CS` boots the runtime; later calls reuse it. See [Architecture](16_architecture.md).
 
 ## Why .NET Framework v4.0.30319?
 
 This is the widest natively-compatible runtime on Windows:
 
-- **Windows 7 SP1+**: .NET 4.0 included via Windows Update
+- **Windows 7 SP1+**: .NET 4.0 via Windows Update
 - **Windows 8/8.1**: .NET 4.5 pre-installed (runs 4.0 code)
 - **Windows 10/11**: .NET 4.8 pre-installed (runs 4.0 code)
 
-Result: **ZERO dependency installs** on any supported Windows version.
+Result: no extra runtime installs on any supported Windows version.
 
 ## Project Structure
 
 ```
-AHK#/
+AHKSharp/
+├── ahk#_playground.ahk        ← Developer Studio (10-tab GUI, see the README)
 ├── lib/
-│   ├── ahk#.ahk              ← Main library (include this)
-│   ├── ahk#.bridge.dll       ← Auto-compiled bridge DLL
-│   └── build.ps1             ← Build script
+│   ├── ahk#.ahk               ← The library (include this)
+│   ├── ahk#.bridge.dll        ← Prebuilt bridge DLL (committed); its SHA-256 is pinned inside ahk#.ahk
+│   ├── .bridge_hash           ← Hash of src\*.cs used by build.ps1
+│   ├── ahk#.d.ahk             ← (generated by CS.Declare, only when you run it) editor declarations, see docs\21_editor_support.md
+│   └── build.ps1              ← Rebuilds the DLL from src\ and re-pins its SHA-256
 ├── src/
-│   ├── bridge/
-│   │   ├── AhkSharpBridge.cs  ← Core bridge C# source
-│   └── swarm/
-│       ├── MemoryMappedIpc.cs  ← IPC extension
-│       ├── NativeUi.cs         ← WinForms embedding
-│       ├── PhantomSqlite.cs    ← SQLite via winsqlite3
-│       └── UiaDeepCrawler.cs   ← UIAutomation
-├── ext/
-│   ├── ahk#.http.ahk          ← Built-in HTTP/JSON
+│   ├── bridge/                ← the bridge, split by concern (all compiled into ahk#.bridge.dll)
+│   │   ├── AhkSharpBridge.cs  ← COM entry class: every method AHK calls
+│   │   ├── Discovery.cs       ← CS.Members / CS.Types, "did you mean" for type paths
+│   │   ├── MemberHints.cs     ← "did you mean" for members
+│   │   ├── Declarations.cs    ← CS.Declare: the ahk#.d.ahk editor declaration file
+│   │   ├── OverloadBinder.cs  ← overload scoring / coercion, CS.Explain
+│   │   ├── AhkCallback.cs     ← AHK functions called by .NET, worker-thread queue
+│   │   ├── ValueBox.cs        ← keeps structs and arrays as real references
+│   │   ├── Extras.cs          ← CS.Implement (RealProxy), CS.Wrap generator
+│   │   ├── TypeResolver.cs    ← type-name lookup
+│   │   ├── MarshalEngine.cs   ← CLR <-> COM value conversion
+│   │   ├── RuntimeCompiler.cs ← _CSModule / CS.Eval compilation and cache
+│   │   ├── ErrorInfo.cs       ← typed-exception recorder, member cache
+│   │   ├── AsyncRouter.cs     ← ThreadPool / Task -> promise
+│   │   ├── FastParallel.cs    ← CS.Fast
+│   │   ├── NuGetManager.cs    ← packages, SHA-512 check, Roslyn download
+│   │   ├── FrameworkPicker.cs ← which target frameworks the .NET Framework CLR can load
+│   │   ├── NuGetSearch.cs     ← CS.NuGet.Search
+│   │   └── DelegateBridge.cs  ← event subscription
+│   └── ext/                   ← C# behind the extensions (same DLL)
+│       ├── MemoryMappedIpc.cs ← IPC extension
+│       ├── NativeUi.cs        ← WinForms embedding
+│       ├── PhantomSqlite.cs   ← SQLite via winsqlite3
+│       └── UiaDeepCrawler.cs  ← UIAutomation
+├── ext/                       ← the AHK side of the extensions
+│   ├── ahk#.http.ahk          ← HTTP client + JSON helpers
 │   ├── ahk#.sqlite.ahk        ← SQLite wrapper
 │   ├── ahk#.ipc.ahk           ← Memory-mapped IPC
 │   ├── ahk#.ui.ahk            ← Native UI controls
-│   └── ahk#.uia.ahk           ← UIAutomation
+│   ├── ahk#.uia.ahk           ← UIAutomation
+│   └── ahk#.spatial.ahk       ← screen-region text watcher (you supply the OCR function)
+├── workbench/                 ← Sources used by the playground
 ├── examples/
-│   ├── 01_hello_dotnet.ahk     ← ... through ...
-│   └── 35_gc_memory.ahk       ← 35 examples
-├── docs/                       ← Documentation
-└── README.md                   ← This file
+│   ├── basics/                ← hello_dotnet, csmodule, cs_eval, collections, import_namespaces
+│   ├── features/              ← async, cs_fast, delegate_events, ipc, nuget_json, load_assembly, ...
+│   ├── tools/                 ← crypto, excel, file analyzer/searcher, zip, regex, profiler, ...
+│   ├── system/                ← file watcher, WMI, UIA, XInput, PE inspector, memory + Frida tools, ...
+│   ├── network/               ← http client, async web API, websocket server
+│   ├── showcase/              ← mandelbrot, physics, full stack, sqlite, native UI, UIA+SQLite
+│   └── benchmarks/            ← speed_benchmark, ecosystem_benchmark (+ vendored lib_bench\)
+├── tests/                     ← Test harness, suites, run_tests.ps1 and lint_docs.ps1 (see docs\20_testing.md)
+├── .github/workflows/         ← tests.yml: the suites on a Windows runner
+├── docs/                      ← Documentation
+├── README.md
+├── CHANGELOG.md               ← what changed since 1.0.0
+└── CONTRIBUTING.md            ← building, the C# 4.0 rule, adding tests and bridge methods
 ```
+
+Each script in `examples\` includes the library as `#Include ..\..\lib\ahk#.ahk`.
+
+## Limitations
+
+- **.NET Framework 4.x only.** The bridge hosts CLR v4.0.30319. Assemblies built for .NET 5+ / .NET Core cannot be loaded.
+- **C# 4.0 by default.** `static CSVersion := "5.0"` to `"12.0"` (or `"latest"`) compiles through Roslyn, which is downloaded from NuGet on first use; `"11.0"` and up need .NET Framework 4.7.2+. It is newer *syntax* on the same .NET Framework 4 runtime: no `Span<T>`, `Index` / `Range`, default interface members or async streams ([Version Targeting](13_version_targeting.md)).
+- **NuGet packages must have a .NET Framework build.** `net4x`, `netstandard1.0`-`2.0` (Framework 4.7.2+) and `net20`-`net35` load; `net5.0`+ and `netstandard2.1` are refused with a message that lists what the package offers ([NuGet](05_nuget.md#framework-targeting)).
+- **No AppDomain unload.** Compiled and loaded assemblies stay until the process exits.
+- **AHK callbacks always run on the AHK thread.** `list.Where(fn)` is a direct call. When .NET calls your function from a worker thread (`Task.Run(fn)`, a timer) the call is queued and the AHK thread runs it while it pumps messages (`Sleep`, a GUI, `Await`). If the AHK thread is blocked inside a synchronous .NET call that waits for those workers (`Task.Run(fn).Wait()`, `Parallel.ForEach`), the worker gets a `TimeoutException` after `CS.Config.CallbackTimeoutMs` (5000 ms): call it through `.Async` and `Await()` instead ([Async/Await](04_async.md)).
+- **Generic methods are inferred from the arguments only.** You cannot pass explicit type arguments to a generic method (generic *types* are fine).
+- **`out` / `ref` need the `&var` form.** `CS.System.Int32.TryParse("12", &n)` works on static and instance method calls; constructors, `.Async` calls and `_CSModule` methods take no `&var` ([Marshaling](17_marshaling.md)).
+
+More detail on each: [Marshaling](17_marshaling.md), [Troubleshooting](18_troubleshooting.md).
 
 ## Next Steps
 
-- [CS Namespace](02_cs_namespace.md) — Call any .NET method
-- [CSModule](03_csmodule.md) — Embed C# code in AHK
-- [NuGet](05_nuget.md) — Use NuGet packages
-- [CS.Eval](06_eval.md) — One-liner expressions
+- [CS Namespace](02_cs_namespace.md): call any .NET method
+- [CSModule](03_csmodule.md): embed C# code in AHK
+- [Async/Await](04_async.md): promises, chaining, timeouts
+- [NuGet](05_nuget.md): use NuGet packages
+- [Editor Support](21_editor_support.md): completion and hover for `CS.System...` in VS Code
+- [CS.Eval](06_eval.md): one-liner expressions
+- [Marshaling](17_marshaling.md): how values convert
+- [Troubleshooting](18_troubleshooting.md) and [Security](19_security.md)
+- [Testing](20_testing.md): run the suites, write your own
+- [CHANGELOG](../CHANGELOG.md) and [CONTRIBUTING](../CONTRIBUTING.md)

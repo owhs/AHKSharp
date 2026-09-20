@@ -14,7 +14,12 @@ class SharedMemory {
         return this
     }
 
+    ; data: an AHK Buffer, a .NET byte[] proxy, or a raw byte SafeArray
     WriteBytes(data) {
+        if (data is _CSProxy)
+            data := data.ToBuffer()
+        if (data is Buffer)
+            data := _BufferToByteArray(data, data.Size)
         this._ipc.WriteBytes(data)
         return this
     }
@@ -23,8 +28,9 @@ class SharedMemory {
         return this._ipc.Read()
     }
 
+    ; returns an AHK Buffer (read it with NumGet / StrGet)
     ReadBytes() {
-        return this._ipc.ReadBytes()
+        return _ByteArrayToBuffer(this._ipc.ReadBytes())
     }
 
     Length {

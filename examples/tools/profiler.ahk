@@ -49,19 +49,6 @@ class Profiler extends _CSModule {
             return us;
         }
 
-        public static double Measure(string label, int iterations) {
-            if (!_history.ContainsKey(label))
-                _history[label] = new List<double>();
-
-            var sw = new Stopwatch();
-            long memBefore = GC.GetTotalMemory(false);
-            sw.Start();
-            // Returns immediately — caller runs the code and calls MeasureEnd
-            _active[label] = sw;
-            _memSnap[label] = memBefore;
-            return 0;
-        }
-
         public static string Report() {
             if (_history.Count == 0) return "(no profiling data)";
 

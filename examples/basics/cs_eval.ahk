@@ -1,4 +1,4 @@
-﻿;; AHK# Example 28 — CS.Eval: One-Liner Expressions
+﻿;; AHK# — CS.Eval: One-Liner Expressions
 ;; Evaluate C# expressions inline without defining a CSModule class.
 ;; Result is compiled and cached — second call with same expression is instant.
 

@@ -153,6 +153,31 @@ public class UiaDeepCrawler
         }
     }
 
+    // ── Bulk row API (used by ext\ahk#.uia.ahk) ───────────────────────────
+    // One COM call returns every element as a plain object[] row instead of one COM call per property.
+    // Field order: Name, AutomationId, ClassName, ControlType, LocalizedControlType, ProcessId,
+    // NativeWindowHandle, BoundingX, BoundingY, BoundingW, BoundingH, IsEnabled(1/0), IsOffscreen(1/0),
+    // Value, Depth, ChildCount.
+    private static object[] RowOf(UiaElement e)
+    {
+        if (e == null) return null;
+        return new object[] {
+            e.Name, e.AutomationId, e.ClassName, e.ControlType, e.LocalizedControlType, e.ProcessId,
+            e.NativeWindowHandle, e.BoundingX, e.BoundingY, e.BoundingW, e.BoundingH,
+            e.IsEnabled ? 1 : 0, e.IsOffscreen ? 1 : 0, e.Value, e.Depth, e.ChildCount };
+    }
+
+    private static object[] RowsOf(UiaElement[] elements)
+    {
+        object[] rows = new object[elements.Length];
+        for (int i = 0; i < elements.Length; i++) rows[i] = RowOf(elements[i]);
+        return rows;
+    }
+
+    public object[] CrawlWindowRows(long hwnd, int maxDepth) { return RowsOf(CrawlWindow(hwnd, maxDepth)); }
+    public object[] FindElementRows(long hwnd, string conditionStr, int maxDepth) { return RowsOf(FindElements(hwnd, conditionStr, maxDepth)); }
+    public object[] ElementFromPointRow(int x, int y) { return RowOf(ElementFromPoint(x, y)); }
+    public object[] FocusedElementRow() { return RowOf(FocusedElement()); }
     /// <summary>Click an element by invoking its Invoke pattern.</summary>
     public bool InvokeElement(long hwnd, string automationId)
     {

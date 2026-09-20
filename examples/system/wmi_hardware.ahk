@@ -74,12 +74,30 @@ lblStats := g.Add("Text", "w350 h200", "Loading hardware data...")
 g.Show("w370")
 g.OnEvent("Close", (*) => ExitApp())
 
+; In-flight guard: a WMI query can take longer than the 2 s timer interval, so never start
+; a second query while one is still running (they would pile up on the thread pool).
+; A stuck query is abandoned after 15 s so the monitor cannot freeze forever.
+queryInFlight := false
+queryStartTick := 0
+
 UpdateStats() {
+    global queryInFlight, queryStartTick
+    if (queryInFlight && A_TickCount - queryStartTick < 15000)
+        return
+    queryInFlight := true
+    queryStartTick := A_TickCount
     ; Use AHK# Async so querying WMI doesn't lag the GUI dragging!
-    HardwareMonitor.Async.GetHardwareStats().Then(OnDataReady)
+    try
+        HardwareMonitor.Async.GetHardwareStats().Then(OnDataReady)
+    catch as err {
+        queryInFlight := false
+        lblStats.Value := "WMI query failed: " err.Message
+    }
 }
 
 OnDataReady(statsArray) {
+    global queryInFlight
+    queryInFlight := false
     text := ""
     ; statsArray is returned from C# as a COM SafeArray, natively iterable in AHK!
     for item in statsArray {

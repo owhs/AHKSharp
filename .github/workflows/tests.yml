@@ -1,0 +1,60 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+# A newer push to the same ref makes the older run pointless
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45     # a hung suite must not burn the 6-hour default
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install AutoHotkey v2
+        shell: pwsh
+        run: |
+          # Chocolatey first; fall back to the official portable zip if the package is missing or not v2
+          $exe = $null
+          try { choco install autohotkey -y --no-progress } catch { Write-Warning "choco install failed: $_" }
+          $root = Join-Path $env:ProgramFiles "AutoHotkey"
+          if (Test-Path $root) {
+              $exe = Get-ChildItem $root -Recurse -Filter AutoHotkey64.exe |
+                  Where-Object { (Get-Item $_.FullName).VersionInfo.FileVersion -like "2.*" } | Select-Object -First 1
+          }
+          if (-not $exe) {
+              Write-Warning "AutoHotkey v2 not found after choco install - downloading the portable zip"
+              $zip = Join-Path $env:RUNNER_TEMP "ahk-v2.zip"
+              $dir = Join-Path $env:RUNNER_TEMP "ahk-v2"
+              Invoke-WebRequest "https://www.autohotkey.com/download/ahk-v2.zip" -OutFile $zip
+              Expand-Archive $zip -DestinationPath $dir -Force
+              $exe = Get-ChildItem $dir -Recurse -Filter AutoHotkey64.exe | Select-Object -First 1
+          }
+          if (-not $exe) { throw "AutoHotkey64.exe (v2) not found" }
+          Write-Host "AutoHotkey: $($exe.FullName)  v$((Get-Item $exe.FullName).VersionInfo.FileVersion)"
+          "AHK_EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Check the docs for drift (links, paths, CS members)
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\lint_docs.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build the bridge from source (verifies csc + the pinned hash workflow)
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File lib\build.ps1 -Force
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run the test suites (incl. network tests)
+        shell: pwsh
+        env:
+          AHKSHARP_NET: "1"
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\run_tests.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

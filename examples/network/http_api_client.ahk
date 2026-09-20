@@ -1,59 +1,13 @@
-﻿;; AHK# Example 15 — HTTP API Client
-;; Fetch live data from public APIs using System.Net.WebClient.
-;; In pure AHK: WinHttp COM, 50+ lines of boilerplate.
-;; In AHK#: 3 lines per request.
+﻿;; AHK# — HTTP API Client
+;; Fetch live data from public APIs using the built-in HTTP/JSON extension
+;; (ext\ahk#.http.ahk): Http.Get / Http.Post / Http.Head and Json.Query / Json.Build.
+;; Every request goes through .Async + .Then, so the GUI never blocks while the
+;; download runs on a .NET ThreadPool thread.
 
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 #Include ..\..\lib\ahk#.ahk
-
-class HttpClient extends _CSModule {
-    static CSharp := "
-    (
-        using System;
-        using System.Net;
-        using System.Text;
-
-        static bool _init = Init();
-        static bool Init() {
-            ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
-            return true;
-        }
-
-        public static string Get(string url) {
-            using (var client = new WebClient()) {
-                client.Encoding = Encoding.UTF8;
-                client.Headers.Add("User-Agent", "AHK-Sharp/1.0");
-                return client.DownloadString(url);
-            }
-        }
-
-        public static string Post(string url, string jsonBody) {
-            using (var client = new WebClient()) {
-                client.Encoding = Encoding.UTF8;
-                client.Headers.Add("Content-Type", "application/json");
-                client.Headers.Add("User-Agent", "AHK-Sharp/1.0");
-                return client.UploadString(url, jsonBody);
-            }
-        }
-
-        public static string Head(string url) {
-            var req = WebRequest.Create(url);
-            req.Method = "HEAD";
-            using (var resp = (HttpWebResponse)req.GetResponse()) {
-                return (int)resp.StatusCode + "|" + resp.ContentType + "|" + resp.Server;
-            }
-        }
-    )"
-}
-
-; Simple JSON value extractor (no external lib needed)
-JsonVal(json, key) {
-    pattern := '"' key '"\s*:\s*"?([^",}\]]+)"?'
-    if RegExMatch(json, pattern, &m)
-        return Trim(m[1])
-    return "(not found)"
-}
+#Include ..\..\ext\ahk#.http.ahk
 
 ; ── GUI ───────────────────────────────────────────────────────────────────────
 
@@ -71,85 +25,95 @@ btnFetch.OnEvent("Click", (*) => DoFetch())
 
 g.Add("Text", "x10 y38", "Quick:")
 btnIp := g.Add("Button", "x60 y36 w80 h24", "My IP")
-btnTime := g.Add("Button", "x145 y36 w80 h24", "UTC Time")
+btnPost := g.Add("Button", "x145 y36 w80 h24", "POST")
 btnUuid := g.Add("Button", "x230 y36 w80 h24", "UUID")
 btnHeaders := g.Add("Button", "x315 y36 w80 h24", "Headers")
 
 g.SetFont("s9", "Cascadia Mono")
 resultEdit := g.Add("Edit", "x10 y68 w480 h380 Multi ReadOnly Background0x181825 cA6E3A1")
 
+; ── Request plumbing ──────────────────────────────────────────────────────────
+
+reqSeq := 0   ; id of the newest request; older responses are ignored
+
+; `promise` comes from Http.Async.*; `render(body)` turns the raw response into text.
+StartRequest(label, promise, render) {
+    global reqSeq
+    seq := ++reqSeq
+    t0 := A_TickCount
+    resultEdit.Value := label " ..."
+    promise.Then((body) => OnDone(seq, t0, label, render, body))
+           .Catch((err) => OnFail(seq, label, err))
+}
+
+OnDone(seq, t0, label, render, body) {
+    if (seq != reqSeq)
+        return
+    try {
+        resultEdit.Value := "═══ " label " (" (A_TickCount - t0) "ms) ═══`n`n" render(body)
+    } catch as e {
+        resultEdit.Value := label " — could not read response: " e.Message
+    }
+}
+
+OnFail(seq, label, err) {
+    if (seq != reqSeq)
+        return
+    resultEdit.Value := label " failed:`n" FriendlyError(err)
+}
+
+; .NET exception text carries a stack trace; keep only the innermost first line.
+FriendlyError(err) {
+    line := StrSplit(err.Message, "`n")[1]
+    if (p := InStr(line, "---> ", false, -1))
+        line := SubStr(line, p + 5)
+    return Trim(line, "`r ")
+}
+
 ; ── Handlers ──────────────────────────────────────────────────────────────────
 
 DoFetch() {
     url := urlEdit.Value
-    resultEdit.Value := "Fetching " url "..."
-    try {
-        t := A_TickCount
-        body := HttpClient.Get(url)
-        elapsed := A_TickCount - t
-        resultEdit.Value := "GET " url " (" elapsed "ms)`n"
-            . "───────────────────────────────`n"
-            . body
-    } catch as e {
-        resultEdit.Value := "Error: " e.Message
-    }
+    StartRequest("GET " url, Http.Async.Get(url), (body) => body)
 }
 
-btnIp.OnEvent("Click", (*) => FetchApi("https://httpbin.org/ip", "origin"))
-btnUuid.OnEvent("Click", (*) => FetchApi("https://httpbin.org/uuid", "uuid"))
-btnHeaders.OnEvent("Click", (*) => DoHead())
-
-btnTime.OnEvent("Click", (*) => DoUtcTime())
-
-DoUtcTime() {
-    resultEdit.Value := "Fetching UTC time..."
-    try {
-        t := A_TickCount
-        body := HttpClient.Get("https://httpbin.org/get")
-        elapsed := A_TickCount - t
-        utc := CS.System.DateTime.UtcNow
-        resultEdit.Value := "═══ UTC Time ═══`n`n"
-            . "  UTC Now:  " utc "`n"
-            . "  Source:   System.DateTime.UtcNow`n"
-            . "  Latency:  " elapsed "ms (httpbin.org roundtrip)`n"
-            . "`n─── httpbin.org /get ───`n" body
-    } catch as e {
-        resultEdit.Value := "Error: " e.Message
-    }
+DoIp() {
+    StartRequest("My IP", Http.Async.Get("https://httpbin.org/ip")
+        , (body) => "  Origin:  " Json.Query(body, "origin") "`n`n─── Raw Response ───`n" body)
 }
 
-FetchApi(url, key) {
-    resultEdit.Value := "Fetching..."
-    try {
-        t := A_TickCount
-        body := HttpClient.Get(url)
-        elapsed := A_TickCount - t
-        val := JsonVal(body, key)
-        resultEdit.Value := "═══ API Result ═══`n`n"
-            . "  URL:     " url "`n"
-            . "  Key:     " key "`n"
-            . "  Value:   " val "`n"
-            . "  Latency: " elapsed "ms`n"
-            . "`n─── Raw Response ───`n" body
-    } catch as e {
-        resultEdit.Value := "Error: " e.Message
-    }
+DoUuid() {
+    StartRequest("UUID", Http.Async.Get("https://httpbin.org/uuid")
+        , (body) => "  UUID:  " Json.Query(body, "uuid") "`n`n─── Raw Response ───`n" body)
+}
+
+DoPost() {
+    ; Json.Build takes key/value pairs and returns a JSON string
+    payload := Json.Build("name", "AHK#", "language", "AutoHotkey v2")
+    StartRequest("POST https://httpbin.org/post"
+        , Http.Async.Post("https://httpbin.org/post", payload)
+        , (body) => "  Sent:         " payload "`n"
+            . "  Echoed name:  " Json.Query(body, "json.name") "`n`n"
+            . "─── Raw Response ───`n" body)
 }
 
 DoHead() {
     url := urlEdit.Value
-    resultEdit.Value := "HEAD " url "..."
-    try {
-        raw := HttpClient.Head(url)
-        parts := StrSplit(raw, "|")
-        resultEdit.Value := "═══ HEAD Response ═══`n`n"
-            . "  Status:  " parts[1] "`n"
-            . "  Type:    " (parts.Length >= 2 ? parts[2] : "?") "`n"
-            . "  Server:  " (parts.Length >= 3 ? parts[3] : "?")
-    } catch as e {
-        resultEdit.Value := "Error: " e.Message
-    }
+    StartRequest("HEAD " url, Http.Async.Head(url), RenderHead)
 }
+
+; Http.Head returns "status|content-type|server"
+RenderHead(raw) {
+    parts := StrSplit(raw, "|")
+    return "  Status:  " parts[1] "`n"
+        . "  Type:    " (parts.Length >= 2 ? parts[2] : "?") "`n"
+        . "  Server:  " (parts.Length >= 3 ? parts[3] : "?")
+}
+
+btnIp.OnEvent("Click", (*) => DoIp())
+btnPost.OnEvent("Click", (*) => DoPost())
+btnUuid.OnEvent("Click", (*) => DoUuid())
+btnHeaders.OnEvent("Click", (*) => DoHead())
 
 g.Show("w500 h460")
 WinWaitClose(g.Hwnd)

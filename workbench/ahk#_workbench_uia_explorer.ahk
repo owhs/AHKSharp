@@ -31,19 +31,7 @@ LaunchUiaExplorer(*) {
     gUiaExplorer.MarginX := 12
     gUiaExplorer.MarginY := 12
     
-    if pAllowDarkModeForWindow
-        try DllCall(pAllowDarkModeForWindow, "ptr", gUiaExplorer.hwnd, "int", 1)
-        
-    ; Native Dark Window Titlebar
-    try {
-        if (VerCompare(A_OSVersion, "10.0.17763") >= 0) {
-            attr := 19
-            if (VerCompare(A_OSVersion, "10.0.18985") >= 0)
-                attr := 20
-            DllCall("dwmapi\DwmSetWindowAttribute", "ptr", gUiaExplorer.hwnd, "int", attr, "int*", true, "int", 4)
-        }
-    } catch {
-    }
+    WB_DarkWindow(gUiaExplorer)
         
     ; Title / Header
     gUiaExplorer.SetFont("s11 c0x00d4ff bold", "Segoe UI")
@@ -51,7 +39,7 @@ LaunchUiaExplorer(*) {
     
     ; Target Selector Group
     gUiaExplorer.SetFont("s9 c0xd0d0e0 norm", "Segoe UI")
-    btnDragTarget := AddButton(gUiaExplorer, "x12 y42 w160 h30", "☉ Drag & Target Window")
+    btnDragTarget := AddButton(gUiaExplorer, "x12 y42 w160 h30", "☉ Drag && Target Window")
     btnDragTargetHwnd := btnDragTarget.hwnd
     
     gUiaExplorer.SetFont("s9 c0xa78bfa bold", "Segoe UI")
@@ -112,37 +100,9 @@ LaunchUiaExplorer(*) {
     btnCloseExplorer := AddButton(gUiaExplorer, "x598 y480 w190 h32", "Close")
     btnCloseExplorer.OnEvent("Click", (*) => gUiaExplorer.Destroy())
     
-    ; Modern styling & fully dark themed native scrollbars and headers
-    try {
-        if pAllowDarkModeForWindow {
-            try DllCall(pAllowDarkModeForWindow, "ptr", tvUia.hwnd, "int", 1)
-            try DllCall(pAllowDarkModeForWindow, "ptr", lvProps.hwnd, "int", 1)
-            try DllCall(pAllowDarkModeForWindow, "ptr", lvSteps.hwnd, "int", 1)
-            try DllCall(pAllowDarkModeForWindow, "ptr", edCodePreview.hwnd, "int", 1)
-            try DllCall(pAllowDarkModeForWindow, "ptr", edTreeSearch.hwnd, "int", 1)
-        }
-        
-        DllCall("uxtheme\SetWindowTheme", "ptr", tvUia.hwnd, "str", "DarkMode_Explorer", "ptr", 0)
-        DllCall("uxtheme\SetWindowTheme", "ptr", lvProps.hwnd, "str", "DarkMode_Explorer", "ptr", 0)
-        DllCall("uxtheme\SetWindowTheme", "ptr", lvSteps.hwnd, "str", "DarkMode_Explorer", "ptr", 0)
-        DllCall("uxtheme\SetWindowTheme", "ptr", edCodePreview.hwnd, "str", "DarkMode_Explorer", "ptr", 0)
-        DllCall("uxtheme\SetWindowTheme", "ptr", edTreeSearch.hwnd, "str", "DarkMode_Explorer", "ptr", 0)
-        
-        ; Style ListView Header Control to be fully dark themed (DarkMode_ItemsView)
-        headerHwnd := SendMessage(0x101F, 0, 0, lvProps.hwnd) ; LVM_GETHEADER
-        if headerHwnd {
-            DllCall("uxtheme\SetWindowTheme", "ptr", headerHwnd, "str", "DarkMode_ItemsView", "ptr", 0)
-        }
-        headerHwnd2 := SendMessage(0x101F, 0, 0, lvSteps.hwnd) ; LVM_GETHEADER
-        if headerHwnd2 {
-            DllCall("uxtheme\SetWindowTheme", "ptr", headerHwnd2, "str", "DarkMode_ItemsView", "ptr", 0)
-        }
-        
-        ; Subclass listview to paint custom light grey column header texts
-        DllCall("Comctl32\SetWindowSubclass", "Ptr", lvProps.hwnd, "Ptr", lvSubclassCallback, "Ptr", lvProps.hwnd, "Ptr", 0)
-        DllCall("Comctl32\SetWindowSubclass", "Ptr", lvSteps.hwnd, "Ptr", lvSubclassCallback, "Ptr", lvSteps.hwnd, "Ptr", 0)
-    } catch {
-    }
+    ; Fully dark themed scrollbars, headers and inputs (shared helper from the playground)
+    for darkCtrl in [tvUia, lvProps, lvSteps, edCodePreview, edTreeSearch]
+        WB_DarkControl(darkCtrl)
     
     g_automationSteps := []
     g_automationSteps.Push({
@@ -164,184 +124,167 @@ LaunchUiaExplorer(*) {
     gUiaExplorer.Show("x" sidecarX " y" sidecarY " w800 h530")
 }
 
+; True when hwnd (or one of its parents) is the studio or the explorer window itself
+UiaIsOurWindow(hwnd) {
+    global gUiaExplorer
+    cur := hwnd
+    while (cur) {
+        if (cur == gUiaExplorer.Hwnd || cur == g.Hwnd)
+            return true
+        try {
+            cur := DllCall('GetParent', 'ptr', cur, 'ptr')
+        } catch {
+            break
+        }
+    }
+    return false
+}
+
+; Ask UI Automation what is under the cursor, outline it, and return the tooltip text
+UiaPointTip(mX, mY, targetHwnd) {
+    title := WinGetTitle('ahk_id ' targetHwnd)
+    class := WinGetClass('ahk_id ' targetHwnd)
+    plainTip := 'Target: ' title '`nClass: ' class '`nHWND: ' targetHwnd '`nRelease to explore.'
+
+    elementStr := ''
+    try elementStr := WBHelper.GetUiaElementAtPoint(mX, mY)
+    parts := StrSplit(elementStr, '|')
+    if (elementStr == '' || parts.Length < 5) {
+        UiaHighlighter.Hide()
+        return plainTip
+    }
+
+    elName := parts[1]
+    elType := parts[2]
+    elId := parts[3]
+    elClassName := parts[4]
+    rectParts := StrSplit(parts[5], ',')
+    if (rectParts.Length != 4) {
+        UiaHighlighter.Hide()
+        return plainTip
+    }
+    rW := Integer(rectParts[3])
+    rH := Integer(rectParts[4])
+    if (rW <= 0 || rH <= 0) {
+        UiaHighlighter.Hide()
+        return plainTip
+    }
+
+    UiaHighlighter.Show(Integer(rectParts[1]), Integer(rectParts[2]), rW, rH)
+    displayText := elType
+    if (elName != '')
+        displayText .= ' : "' elName '"'
+    else if (elId != '')
+        displayText .= ' [ID: ' elId ']'
+    else if (elClassName != '')
+        displayText .= ' (Class: ' elClassName ')'
+    return 'Target: ' title '`nClass: ' class '`n`nComponent: ' displayText '`nRelease to explore.'
+}
+
 TrackTargetDrag() {
     global gUiaExplorer, btnDragTarget, lblTargetWindow, g_targetHwnd
-    
+
     SetMouseDelay(-1)
     ToolTip('Drag over the target window and release left mouse button...')
-    
+
     ; Change the drag button's visual state
     btnDragTarget.Text := '☉ Dragging...'
     btnDragTarget.Opt('+Background0x2d3748')
-    
+
+    ; UIA element lookups are cross-process and slow: only ask again when the mouse has moved
+    ; a few pixels (or every so often), otherwise reuse the previous tooltip.
+    lastX := -999
+    lastY := -999
+    lastTick := 0
+    tip := ''
     Loop {
         if !GetKeyState('LButton', 'P')
             break
-            
+
         MouseGetPos(&mX, &mY, &targetHwnd)
         if targetHwnd {
-            title := WinGetTitle('ahk_id ' targetHwnd)
-            class := WinGetClass('ahk_id ' targetHwnd)
-            
-            ; Determine if target window is ours
-            ourGuiHwnd := gUiaExplorer.Hwnd
-            mainGuiHwnd := g.Hwnd
-            curHwnd := targetHwnd
-            isOurs := false
-            while (curHwnd) {
-                if (curHwnd == ourGuiHwnd || curHwnd == mainGuiHwnd) {
-                    isOurs := true
-                    break
-                }
-                try {
-                    curHwnd := DllCall('GetParent', 'ptr', curHwnd, 'ptr')
-                } catch {
-                    break
-                }
-            }
-            
-            if (isOurs) {
+            if UiaIsOurWindow(targetHwnd) {
                 UiaHighlighter.Hide()
-                ToolTip('Target: [Our Window]`nRelease is disabled.')
-            } else {
-                elementStr := ''
-                try {
-                    elementStr := WBHelper.GetUiaElementAtPoint(mX, mY)
-                } catch {
-                    elementStr := ""
-                }
-                
-                if (elementStr != '') {
-                    parts := StrSplit(elementStr, '|')
-                    if (parts.Length >= 5) {
-                        elName := parts[1]
-                        elType := parts[2]
-                        elId := parts[3]
-                        elClassName := parts[4]
-                        rectStr := parts[5]
-                        
-                        rectParts := StrSplit(rectStr, ',')
-                        if (rectParts.Length == 4) {
-                            rX := Integer(rectParts[1])
-                            rY := Integer(rectParts[2])
-                            rW := Integer(rectParts[3])
-                            rH := Integer(rectParts[4])
-                            
-                            if (rW > 0 && rH > 0) {
-                                UiaHighlighter.Show(rX, rY, rW, rH)
-                                displayText := elType
-                                if (elName != '')
-                                    displayText .= ' : "' elName '"'
-                                else if (elId != '')
-                                    displayText .= ' [ID: ' elId ']'
-                                else if (elClassName != '')
-                                    displayText .= ' (Class: ' elClassName ')'
-                                ToolTip('Target: ' title '`nClass: ' class '`n`nComponent: ' displayText '`nRelease to explore.')
-                            } else {
-                                UiaHighlighter.Hide()
-                                ToolTip('Target: ' title '`nClass: ' class '`nHWND: ' targetHwnd '`nRelease to explore.')
-                            }
-                        } else {
-                            UiaHighlighter.Hide()
-                            ToolTip('Target: ' title '`nClass: ' class '`nHWND: ' targetHwnd '`nRelease to explore.')
-                        }
-                    } else {
-                        UiaHighlighter.Hide()
-                        ToolTip('Target: ' title '`nClass: ' class '`nHWND: ' targetHwnd '`nRelease to explore.')
-                    }
-                } else {
-                    UiaHighlighter.Hide()
-                    ToolTip('Target: ' title '`nClass: ' class '`nHWND: ' targetHwnd '`nRelease to explore.')
-                }
+                tip := 'Target: [Our Window]`nRelease is disabled.'
+                lastX := -999
+            } else if (Abs(mX - lastX) > 3 || Abs(mY - lastY) > 3 || A_TickCount - lastTick > 600) {
+                tip := UiaPointTip(mX, mY, targetHwnd)
+                lastX := mX
+                lastY := mY
+                lastTick := A_TickCount
             }
+            ToolTip(tip)
         }
         Sleep(50)
     }
-    
+
     UiaHighlighter.Hide()
     ToolTip()
-    btnDragTarget.Text := '☉ Drag & Target Window'
+    btnDragTarget.Text := '☉ Drag && Target Window'
     btnDragTarget.Opt('+Background0x1f1f30')
-    
+
     MouseGetPos(&mX, &mY, &targetHwnd)
-    if targetHwnd {
-        ourGuiHwnd := gUiaExplorer.Hwnd
-        mainGuiHwnd := g.Hwnd
-        
-        curHwnd := targetHwnd
-        isOurs := false
-        while (curHwnd) {
-            if (curHwnd == ourGuiHwnd || curHwnd == mainGuiHwnd) {
-                isOurs := true
-                break
-            }
-            try {
-                curHwnd := DllCall('GetParent', 'ptr', curHwnd, 'ptr')
-            } catch {
-                break
-            }
-        }
-        
-        if (isOurs) {
-            MsgBox('Cannot target the Developer Studio or UIA Explorer window itself.', 'Invalid Target', 'Iconi')
-            return
-        }
-        
-        releasedElementStr := ''
-        try {
-            releasedElementStr := WBHelper.GetUiaElementAtPoint(mX, mY)
-        } catch {
-            releasedElementStr := ""
-        }
-        
-        g_targetHwnd := targetHwnd
-        title := WinGetTitle('ahk_id ' targetHwnd)
-        lblTargetWindow.Value := 'Target: ' title ' (ahk_id ' targetHwnd ')'
-        
-        LoadUiaTree(targetHwnd)
-        
-        ; Auto-select released element in tree!
-        if (releasedElementStr != '') {
-            parts := StrSplit(releasedElementStr, '|')
-            if (parts.Length >= 5) {
-                elName := parts[1]
-                elType := parts[2]
-                elId := parts[3]
-                elClassName := parts[4]
-                
-                bestNode := 0
-                for nodeID, meta in g_uiaNodeMetadata {
-                    if (meta.type == elType) {
-                        if (elId != '' && meta.id == elId) {
-                            bestNode := nodeID
-                            break
-                        }
-                        if (elName != '' && meta.name == elName) {
-                            bestNode := nodeID
-                            break
-                        }
-                        if (elClassName != '' && meta.className == elClassName) {
-                            bestNode := nodeID
-                        }
-                        if (!bestNode) {
-                            bestNode := nodeID
-                        }
+    if !targetHwnd
+        return
+
+    if UiaIsOurWindow(targetHwnd) {
+        MsgBox('Cannot target the Developer Studio or UIA Explorer window itself.', 'Invalid Target', 'Iconi')
+        return
+    }
+
+    releasedElementStr := ''
+    try releasedElementStr := WBHelper.GetUiaElementAtPoint(mX, mY)
+
+    g_targetHwnd := targetHwnd
+    title := WinGetTitle('ahk_id ' targetHwnd)
+    lblTargetWindow.Value := 'Target: ' title ' (ahk_id ' targetHwnd ')'
+
+    LoadUiaTree(targetHwnd)
+
+    ; Auto-select released element in tree!
+    if (releasedElementStr != '') {
+        parts := StrSplit(releasedElementStr, '|')
+        if (parts.Length >= 5) {
+            elName := parts[1]
+            elType := parts[2]
+            elId := parts[3]
+            elClassName := parts[4]
+
+            bestNode := 0
+            for nodeID, meta in g_uiaNodeMetadata {
+                if (meta.type == elType) {
+                    if (elId != '' && meta.id == elId) {
+                        bestNode := nodeID
+                        break
+                    }
+                    if (elName != '' && meta.name == elName) {
+                        bestNode := nodeID
+                        break
+                    }
+                    if (elClassName != '' && meta.className == elClassName) {
+                        bestNode := nodeID
+                    }
+                    if (!bestNode) {
+                        bestNode := nodeID
                     }
                 }
-                
-                if (bestNode) {
-                    tvUia.Modify(bestNode, 'Select Vis')
-                }
+            }
+
+            if (bestNode) {
+                tvUia.Modify(bestNode, 'Select Vis')
             }
         }
     }
 }
 
 LoadUiaTree(hwnd) {
-    global tvUia, g_uiaNodeMetadata
+    global tvUia, g_uiaNodeMetadata, gUiaExplorer
     tvUia.Delete()
     g_uiaNodeMetadata := Map()
-    
+
+    SetStatus('Reading the UI Automation tree...')
+    WB_Repaint(gUiaExplorer.Hwnd)
+
     treeStr := ''
     try {
         treeStr := WBHelper.GetUiaTree(hwnd)
@@ -349,33 +292,39 @@ LoadUiaTree(hwnd) {
         MsgBox('Failed to query UIA tree: ' ex.Message, 'UIA Explorer Error', 'Iconx')
         return
     }
-    
+
     if (SubStr(treeStr, 1, 6) == 'ERROR:') {
         MsgBox('Failed to retrieve UIA tree: ' treeStr, 'UIA Explorer Error', 'Iconx')
         return
     }
-    
+
+    truncated := false
     parentMap := Map()
     parentMap[0] := 0
-    
+
+    tvUia.Opt('-Redraw')
     Loop Parse, treeStr, '`n', '`r' {
         if (Trim(A_LoopField) == '')
             continue
+        if (SubStr(A_LoopField, 1, 10) == '#TRUNCATED') {     ; the helper hit its node/time cap
+            truncated := true
+            continue
+        }
         parts := StrSplit(A_LoopField, '|')
         if (parts.Length < 5)
             continue
-            
+
         depth := Integer(parts[1])
         name := parts[2]
         type := parts[3]
         id := parts[4]
         className := parts[5]
-        
+
         rectStr := ''
         if (parts.Length >= 6) {
             rectStr := parts[6]
         }
-        
+
         displayText := type
         if (name != '')
             displayText .= ' : "' name '"'
@@ -383,16 +332,22 @@ LoadUiaTree(hwnd) {
             displayText .= ' [ID: ' id ']'
         else if (className != '')
             displayText .= ' (Class: ' className ')'
-            
+
         parentID := 0
         if (depth > 0 && parentMap.Has(depth - 1)) {
             parentID := parentMap[depth - 1]
         }
-        
+
         nodeID := tvUia.Add(displayText, parentID, (depth == 0 ? 'Expand' : ''))
         g_uiaNodeMetadata[nodeID] := { name: name, type: type, id: id, className: className, rect: rectStr }
         parentMap[depth] := nodeID
     }
+    tvUia.Opt('+Redraw')
+
+    if (truncated)
+        SetStatus('UIA tree truncated at ' g_uiaNodeMetadata.Count ' elements (node/time limit) — target a smaller pane for the rest')
+    else
+        SetStatus('UIA tree loaded — ' g_uiaNodeMetadata.Count ' elements')
 }
 
 OnTvUiaSelect(ctrl, itemID) {

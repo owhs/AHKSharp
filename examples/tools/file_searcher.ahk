@@ -16,7 +16,27 @@ class FileSearcher extends _CSModule {
         using System.Threading.Tasks;
 
         private static volatile bool _cancel = false;
-        
+
+        // Files larger than this are streamed line by line instead of read into one string
+        private const long MaxWholeFileBytes = 32L * 1024 * 1024;
+
+        // Reads only the last part of a file (up to 256 KB) and returns its last N lines,
+        // instead of loading the whole file with File.ReadAllLines.
+        private static string[] ReadTailLines(string file, int count) {
+            const int tailBytes = 256 * 1024;
+            using (var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
+                long start = Math.Max(0, fs.Length - tailBytes);
+                fs.Seek(start, SeekOrigin.Begin);
+                byte[] buf = new byte[fs.Length - start];
+                int read = 0, n;
+                while (read < buf.Length && (n = fs.Read(buf, read, buf.Length - read)) > 0) read += n;
+                string text = System.Text.Encoding.UTF8.GetString(buf, 0, read);
+                var lines = text.Split('\n').ToList();
+                if (start > 0 && lines.Count > 0) lines.RemoveAt(0);   // first line is probably cut in half
+                return lines.Skip(Math.Max(0, lines.Count - count)).ToArray();
+            }
+        }
+
         public static void Cancel() {
             _cancel = true;
         }
@@ -43,7 +63,7 @@ class FileSearcher extends _CSModule {
             var results = new ConcurrentBag<string>();
             int filesSearched = 0;
             try {
-                Regex rx = string.IsNullOrEmpty(regexQuery) ? null : new Regex(regexQuery, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+                Regex rx = string.IsNullOrEmpty(regexQuery) ? null : new Regex(regexQuery, RegexOptions.IgnoreCase);   // no RegexOptions.Compiled: one-shot search, compiling costs more than it saves
                 DateTime minDate = maxAgeDays > 0 ? DateTime.Now.AddDays(-maxAgeDays) : DateTime.MinValue;
                 
                 Parallel.ForEach(GetFilesSafe(dir, extPattern), (file, state) => {
@@ -65,17 +85,23 @@ class FileSearcher extends _CSModule {
                         }
                         
                         if (scope == "Full") {
-                            string content = File.ReadAllText(file);
-                            if (rx.IsMatch(content)) results.Add(file);
+                            if (new FileInfo(file).Length <= MaxWholeFileBytes) {
+                                string content = File.ReadAllText(file);
+                                if (rx.IsMatch(content)) results.Add(file);
+                            } else {
+                                // Huge file: stream it line by line instead of loading it all into memory
+                                // (matches spanning several lines are not detected in this mode)
+                                foreach (var line in File.ReadLines(file)) {
+                                    if (rx.IsMatch(line)) { results.Add(file); break; }
+                                }
+                            }
                         } else if (scope == "First100") {
                             foreach(var line in File.ReadLines(file).Take(100)) {
                                 if (rx.IsMatch(line)) { results.Add(file); break; }
                             }
                         } else if (scope == "Last100") {
-                            var allLines = File.ReadAllLines(file);
-                            int start = Math.Max(0, allLines.Length - 100);
-                            for(int i = start; i < allLines.Length; i++) {
-                                if (rx.IsMatch(allLines[i])) { results.Add(file); break; }
+                            foreach (var line in ReadTailLines(file, 100)) {
+                                if (rx.IsMatch(line)) { results.Add(file); break; }
                             }
                         }
                     } catch { } // Ignore locked files

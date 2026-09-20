@@ -1,4 +1,4 @@
-﻿;; AHK# Example 06 — UI Automation Inspector
+;; AHK# Example 06 — UI Automation Inspector
 ;; Demonstrates the UIA extension for crawling, querying, and interacting
 ;; with any application's UI tree at native speed.
 
@@ -74,7 +74,7 @@ F3:: {
 
     ToolTip("")
 
-    if !IsObject(elements) {
+    if (elements.Length == 0) {
         MsgBox("No elements found", "UIA Crawler")
         return
     }
@@ -82,18 +82,12 @@ F3:: {
     ; Count element types
     types := Map()
     count := 0
-    try {
-        Loop {
-            try {
-                el := elements[A_Index - 1]
-                ct := el.ControlType
-                if !types.Has(ct)
-                    types[ct] := 0
-                types[ct] := types[ct] + 1
-                count++
-            } catch
-                break
-        }
+    for el in elements {
+        ct := el.ControlType
+        if !types.Has(ct)
+            types[ct] := 0
+        types[ct] := types[ct] + 1
+        count++
     }
 
     msg := "═══ UI Tree: " title " ═══"
@@ -106,13 +100,11 @@ F3:: {
     ; Show first 10 elements
     msg .= "`n`n─── First 10 Elements ───"
     Loop Min(10, count) {
-        try {
-            el := elements[A_Index - 1]
-            indent := ""
-            Loop el.Depth
-                indent .= "  "
-            msg .= "`n" indent "[" el.ControlType "] " el.Name
-        }
+        el := elements[A_Index]
+        indent := ""
+        Loop el.Depth
+            indent .= "  "
+        msg .= "`n" indent "[" el.ControlType "] " el.Name
     }
 
     MsgBox(msg, "AHK# — UIA Tree Crawl")
@@ -130,25 +122,19 @@ F4:: {
     buttons := UIA2.Find(hwnd, "ControlType=Button", 10)
     ToolTip("")
 
-    if !IsObject(buttons) {
+    if (buttons.Length == 0) {
         MsgBox("No buttons found", "UIA Find")
         return
     }
 
     msg := "═══ Buttons in: " title " ═══`n"
     count := 0
-    try {
-        Loop {
-            try {
-                btn := buttons[A_Index - 1]
-                count++
-                msg .= "`n▸ " btn.Name
-                if (btn.AutomationId != "")
-                    msg .= " (id=" btn.AutomationId ")"
-                msg .= " [" btn.BoundingX "," btn.BoundingY "]"
-            } catch
-                break
-        }
+    for btn in buttons {
+        count++
+        msg .= "`n▸ " btn.Name
+        if (btn.AutomationId != "")
+            msg .= " (id=" btn.AutomationId ")"
+        msg .= " [" btn.BoundingX "," btn.BoundingY "]"
     }
 
     MsgBox(count " buttons found:`n" msg, "AHK# — UIA Button Finder")

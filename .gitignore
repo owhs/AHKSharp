@@ -8,3 +8,6 @@ bin/
 *.exe
 .ast_hash
 !ahk#.bridge.dll
+.ahkh/
+# editor declarations written by CS.Declare()
+lib/ahk#.d.ahk

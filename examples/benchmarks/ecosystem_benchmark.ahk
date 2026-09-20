@@ -69,7 +69,7 @@ chartPic := g.Add("Picture", "x2 y28 w896 h608 vChartPic Background0x0a0a16")
 tabs.UseTab(2)
 g.SetFont("s9 cCDD6F4", "Segoe UI")
 lv := g.Add("ListView", "x2 y28 w896 h330 vLV Background0x0e0e1e c00FF88 -Border Grid NoSort", ["#", "Test", "AHK Lib", "AHK (ms)", "C# (ms)", "Speedup", "Winner"])
-lv.ModifyCol(1, 30), lv.ModifyCol(2, 160), lv.ModifyCol(3, 160), lv.ModifyCol(4, 90), lv.ModifyCol(5, 90), lv.ModifyCol(6, 90), lv.ModifyCol(7, 70)
+lv.ModifyCol(1, 30), lv.ModifyCol(2, 160), lv.ModifyCol(3, 160), lv.ModifyCol(4, 90), lv.ModifyCol(5, 90), lv.ModifyCol(6, 90), lv.ModifyCol(7, 130)
 g.SetFont("s9 c80BFFF", "Cascadia Code")
 detailEdit := g.Add("Edit", "x2 y362 w896 h274 Multi ReadOnly -Border Background0x0a0a18 vDetailEdit +VScroll")
 
@@ -96,6 +96,9 @@ ddTheme := g.Add("ComboBox", "x60 y605 w130 Choose1 vTheme", ["SpaceX (Dark)", "
 lblFilter := g.Add("Text", "x205 y605 w50 h22 +0x200 vLblFilter", "Filter:")
 ddFilter := g.Add("ComboBox", "x255 y605 w160 Choose1 vFilter", ["All Categories", "JSON, XML & COM", "Cryptography & Base64", "Data Structures & Trees", "File Ops, OS & Clipboard"])
 
+g.SetFont("s8 cFFAA32", "Segoe UI")
+noteText := g.Add("Text", "x10 y628 w880 h16 vNote BackgroundTrans", "C# times: measured in-process, setup cached, bridge round trip EXCLUDED. AHK times: wall-clock. * = not like-for-like.")
+g.SetFont("s9 c80BFFF", "Segoe UI")
 lblCompile := g.Add("Text", "x430 y605 w65 h22 +0x200 vLblCompile", "C# Engine:")
 ddCompile := g.Add("ComboBox", "x500 y605 w140 Choose1 vCompile", ["Precompiled DLL", "Dynamic Compiler"])
 
@@ -107,8 +110,6 @@ ddTheme.OnEvent("Change", (*) => OnThemeFilterChange())
 ddFilter.OnEvent("Change", (*) => OnThemeFilterChange())
 ddCompile.OnEvent("Change", (*) => OnThemeFilterChange())
 ddJit.OnEvent("Change", (*) => OnThemeFilterChange())
-ddCompile.OnEvent("Change", (*) => OnThemeFilterChange())
-ddJit.OnEvent("Change", (*) => OnThemeFilterChange())
 
 global globalSpecs := "", allResults := []
 
@@ -117,6 +118,28 @@ OnThemeFilterChange() {
     if allResults.Length == 0
         return
     UpdateDisplay()
+}
+
+; Rows whose C# side does not do the same work as the AHK side. They are still listed,
+; but labelled "not like-for-like" and left out of the speedup summary.
+NotLikeForLike := Map("Async Parallel", 1, "LINQ 100K", 1, "SQLite CRUD 1K", 1)
+IsNotLikeForLike(name) => NotLikeForLike.Has(name)
+
+; Geometric-mean speedup (AHK ms / C# ms) over like-for-like rows only.
+SpeedupSummary() {
+    global allResults
+    logSum := 0.0, n := 0, skipped := 0
+    for r in allResults {
+        if (r.ahk <= 0 || r.cs <= 0)
+            continue                      ; missing / failed / C#-only / AHK-only rows
+        if IsNotLikeForLike(r.name) {
+            skipped++
+            continue
+        }
+        logSum += Ln(r.ahk / r.cs)
+        n++
+    }
+    return {geo: n ? Exp(logSum / n) : 0, count: n, skipped: skipped}
 }
 
 GetCategory(name, lib) {
@@ -176,12 +199,13 @@ UpdateDisplay() {
             if r.cs == 0 && r.ahk == 0 {
                 lv.Modify(row, , , , , , , "1.0x", "Tie")
             } else if r.cs == 0 {
-                lv.Modify(row, , , , , , , "INF", "C#")
+                lv.Modify(row, , , , , , , "INF", IsNotLikeForLike(r.name) ? "Not like-for-like" : "C#")
             } else {
                 ratio := r.ahk / r.cs
-                if ratio >= 1.05 {
-                    winnerCol := (r.name == "Async Parallel" || r.name == "LINQ 100K") ? ".NET Exclusive" : "C#"
-                    lv.Modify(row, , , , , , , Round(ratio, 1) "x", winnerCol)
+                if IsNotLikeForLike(r.name) {
+                    lv.Modify(row, , , , , , , Round(ratio, 1) "x*", "Not like-for-like")
+                } else if ratio >= 1.05 {
+                    lv.Modify(row, , , , , , , Round(ratio, 1) "x", "C#")
                 } else if ratio <= 0.95 {
                     lv.Modify(row, , , , , , , Round(1 / ratio, 1) "x AHK", "AHK")
                 } else {
@@ -202,8 +226,8 @@ UpdateDisplay() {
                 ratio := r.ahk / r.cs
                 winner := ratio >= 1.05 ? Round(ratio, 1) "x" : (ratio <= 0.95 ? Round(1 / ratio, 1) "x AHK" : "Tie")
             }
-            if (r.name == "Async Parallel" || r.name == "LINQ 100K")
-                winner .= " (.NET Exclusive)"
+            if IsNotLikeForLike(r.name)
+                winner := "Not like-for-like (" winner ")"
         } else if r.ahk == -1 {
             winner := "C# Only"
         } else if r.cs == -1 {
@@ -255,6 +279,7 @@ GuiResize(thisGui, minMax, w, h) {
         lblJit.Move(colW * 3 + 10, h - 100, 60, 22)
         ddJit.Move(colW * 3 + 75, h - 100, colW - 85, 22)
 
+        noteText.Move(10, h - 77, w - 20, 16)
         btnRun.Move(5, h - 60, w - 10, 36), statusText.Move(5, h - 22, w - 10, 18)
     }
     SetTimer(DoRerender, -300)
@@ -348,8 +373,10 @@ GetSortValue(item, col) {
             return "Tie"
         } else {
             ratio := item.ahk / item.cs
-            if ratio >= 1.05 {
-                return (item.name == "Async Parallel" || item.name == "LINQ 100K") ? ".NET Exclusive" : "C#"
+            if IsNotLikeForLike(item.name) {
+                return "Not like-for-like"
+            } else if ratio >= 1.05 {
+                return "C#"
             } else if ratio <= 0.95 {
                 return "AHK"
             } else {
@@ -477,6 +504,13 @@ RunAll() {
         Sleep 1
     }
 
+    ; Numbered progress: one running counter (44 numbered steps) instead of hand-typed [n/30]..[n/45] labels
+    stepNo := 0, stepTotal := 44
+    Step(msg) {
+        stepNo++
+        St("[" stepNo "/" stepTotal "] " msg)
+    }
+
     AddResult(name, lib, ahkMs, csMs, snippet) {
         item := { name: name, lib: lib, ahk: ahkMs, cs: csMs, snippet: snippet, notes: "", libSnippet: "" }
         allResults.Push(item)
@@ -531,7 +565,7 @@ RunAll() {
 
     bootMs := Round(QPCms() - bootStart, 2)
 
-    globalSpecs := bootType . " · Boot: " . bootMs . "ms (Compile: " . compileMs . "ms · JIT: " . jitMs . "ms)"
+    globalSpecs := bootType . " · Boot: " . bootMs . "ms (Compile: " . compileMs . "ms · JIT: " . jitMs . "ms) · C# in-process, bridge excluded"
     St("Booted in " . bootMs . "ms! (Compile: " . compileMs . "ms, JIT: " . jitMs . "ms)")
 
     ; -- Prepare data -------------------------------------------------------
@@ -555,7 +589,7 @@ RunAll() {
     ; ======================================================================
     ; 1. JXON
     ; ======================================================================
-    St("[1/30] JXON -- Parse x5K...")
+    Step("JXON -- Parse x5K...")
     iters := 5000
     t1 := QPCms()
     Loop iters
@@ -565,7 +599,7 @@ RunAll() {
     AddResult("JXON Parse 5K", "JXON", ahkMs, csMs, "AHK: Jxon_Load(&json) x" iters "`nC#: JavaScriptSerializer x" iters)
     AddLib("JXON", "Parse x5K", ahkMs, csMs, "Most popular AHK JSON", "Jxon_Load(&json)")
 
-    St("[2/30] JXON -- Stringify x5K...")
+    Step("JXON -- Stringify x5K...")
     obj := Jxon_Load(&jsonStr)
     t1 := QPCms()
     Loop iters
@@ -579,7 +613,7 @@ RunAll() {
     ; ======================================================================
     ; 2. thqby JSON
     ; ======================================================================
-    St("[3/30] thqby JSON -- Parse x5K...")
+    Step("thqby JSON -- Parse x5K...")
     t1 := QPCms()
     Loop iters
         JSON.parse(jsonStr)
@@ -588,7 +622,7 @@ RunAll() {
     AddResult("thqby Parse 5K", "thqby JSON", ahkMs, csMs, "AHK: JSON.parse() x" iters " (thqby class-based)`nC#: JavaScriptSerializer x" iters)
     AddLib("thqby JSON", "Parse x5K", ahkMs, csMs, "Class-based JSON parser", "JSON.parse(str)")
 
-    St("[4/30] thqby JSON -- Stringify x5K...")
+    Step("thqby JSON -- Stringify x5K...")
     obj2 := JSON.parse(jsonStr)
     t1 := QPCms()
     Loop iters
@@ -602,7 +636,7 @@ RunAll() {
     ; ======================================================================
     ; 3. Crypt.ahk
     ; ======================================================================
-    St("[5/30] Crypt.ahk -- MD5 x10K...")
+    Step("Crypt.ahk -- MD5 x10K...")
     hIters := 10000
     t1 := QPCms()
     Loop hIters
@@ -612,7 +646,7 @@ RunAll() {
     AddResult("MD5 10K", "Crypt.ahk", ahkMs, csMs, "AHK: MD5() DllCall advapi32 x" hIters "`nC#: MD5.Create() x" hIters)
     AddLib("Crypt.ahk", "MD5 x10K", ahkMs, csMs, "advapi32 DllCall", "MD5(buffer)")
 
-    St("[6/30] Crypt.ahk -- SHA1 x5K...")
+    Step("Crypt.ahk -- SHA1 x5K...")
     shIters := 5000
     t1 := QPCms()
     Loop shIters
@@ -622,7 +656,7 @@ RunAll() {
     AddResult("SHA1 5K", "Crypt.ahk", ahkMs, csMs, "AHK: Crypt_Hash(SHA) advapi32 x" shIters "`nC#: SHA1.Create() x" shIters)
     AddLib("Crypt.ahk", "SHA1 x5K", ahkMs, csMs, "advapi32 CryptHashData", "Crypt_Hash(buf, size, 'SHA')")
 
-    St("[7/30] Crypt.ahk -- CRC32 x10K...")
+    Step("Crypt.ahk -- CRC32 x10K...")
     t1 := QPCms()
     Loop hIters
         Crypt_Hash(buf, buf.Size, "CRC32")
@@ -631,7 +665,7 @@ RunAll() {
     AddResult("CRC32 10K", "Crypt.ahk", ahkMs, csMs, "AHK: ntdll RtlComputeCrc32 x" hIters "`nC#: Manual CRC32 x" hIters)
     AddLib("Crypt.ahk", "CRC32 x10K", ahkMs, csMs, "ntdll DllCall", "Crypt_Hash(CRC32)")
 
-    St("[8/30] Crypt.ahk -- AES-256 x500...")
+    Step("Crypt.ahk -- AES-256 x500...")
     aIters := 500
     aesBuf := Buffer(64)
     StrPut("Encrypt me for benchmarking!", aesBuf, "UTF-8")
@@ -649,7 +683,7 @@ RunAll() {
     ; ======================================================================
     ; 4. jNizM Base64
     ; ======================================================================
-    St("[9/30] jNizM Base64 -- Encode x5K...")
+    Step("jNizM Base64 -- Encode x5K...")
     b64Iters := 5000
     t1 := QPCms()
     Loop b64Iters
@@ -660,7 +694,7 @@ RunAll() {
     AddResult("B64 Enc jNizM", "jNizM Base64", ahkMs, csMs, "AHK: StringToBase64() crypt32 DllCall x" b64Iters "`nC#: Convert.ToBase64String() x" b64Iters)
     AddLib("jNizM Base64", "Encode x5K", ahkMs, csMs, "crypt32 CryptBinaryToString", "StringToBase64(str)")
 
-    St("[10/30] jNizM Base64 -- Decode x5K...")
+    Step("jNizM Base64 -- Decode x5K...")
     b64encoded := StringToBase64(hashStr)
     t1 := QPCms()
     Loop b64Iters
@@ -673,7 +707,7 @@ RunAll() {
     ; ======================================================================
     ; 5. thqby Base64
     ; ======================================================================
-    St("[11/30] thqby Base64 -- Encode x5K...")
+    Step("thqby Base64 -- Encode x5K...")
     t1 := QPCms()
     Loop b64Iters
         Base64.Encode(hashStr)
@@ -683,7 +717,7 @@ RunAll() {
     AddResult("B64 Enc thqby", "thqby Base64", ahkMs, csMs, "AHK: Base64.Encode() crypt32 class x" b64Iters "`nC#: Convert.ToBase64String() x" b64Iters)
     AddLib("thqby Base64", "Encode x5K", ahkMs, csMs, "crypt32 class wrapper", "Base64.Encode(str)")
 
-    St("[12/30] thqby Base64 -- Decode x5K...")
+    Step("thqby Base64 -- Decode x5K...")
     thqbyEnc := Base64.Encode(hashStr)
     t1 := QPCms()
     Loop b64Iters
@@ -696,7 +730,7 @@ RunAll() {
     ; ======================================================================
     ; 6. Descolada Array.ahk
     ; ======================================================================
-    St("[13/30] Descolada Array -- Sort x100...")
+    Step("Descolada Array -- Sort x100...")
     sIters := 100
     t1 := QPCms()
     Loop sIters
@@ -706,7 +740,7 @@ RunAll() {
     AddResult("Array Sort 1K", "Descolada Array", ahkMs, csMs, "AHK: arr.Sort('N') QuickSort x" sIters "`nC#: Array.Sort() x" sIters "`n`nDescolada adds Sort/Map/Filter/Reduce to arrays")
     AddLib("Descolada Array", "Sort 1K x100", ahkMs, csMs, "QuickSort impl", "arr.Clone().Sort('N')")
 
-    St("[14/30] Descolada Array -- Filter x500...")
+    Step("Descolada Array -- Filter x500...")
     fIters := 500
     t1 := QPCms()
     Loop fIters
@@ -717,7 +751,7 @@ RunAll() {
     AddResult("Array Filter 1K", "Descolada Array", ahkMs, csMs, "AHK: arr.Filter(fn) x" fIters "`nC#: LINQ .Where() x" fIters)
     AddLib("Descolada Array", "Filter x500", ahkMs, csMs, "Callback filter", "arr.Filter((v) => v > 500)")
 
-    St("[15/30] Descolada Array -- Map x500...")
+    Step("Descolada Array -- Map x500...")
     t1 := QPCms()
     Loop fIters
         testArr.Map((v) => v * 2)
@@ -726,7 +760,7 @@ RunAll() {
     AddResult("Array Map 1K", "Descolada Array", ahkMs, csMs, "AHK: arr.Map(fn) x" fIters "`nC#: LINQ .Select() x" fIters)
     AddLib("Descolada Array", "Map x500", ahkMs, csMs, "Transform elements", "arr.Map((v) => v * 2)")
 
-    St("[16/30] Descolada Array -- Reduce x1K...")
+    Step("Descolada Array -- Reduce x1K...")
     rIters := 1000
     t1 := QPCms()
     Loop rIters
@@ -739,7 +773,7 @@ RunAll() {
     ; ======================================================================
     ; 7. Descolada String.ahk
     ; ======================================================================
-    St("[17/30] Descolada String -- Ops x10K...")
+    Step("Descolada String -- Ops x10K...")
     strIters := 10000
     testStr := "  The quick brown fox jumps over the lazy dog  "
     t1 := QPCms()
@@ -755,7 +789,7 @@ RunAll() {
     AddResult("String Ops 10K", "Descolada String", ahkMs, csMs, "AHK: .ToUpper/.Replace/.Trim/.LPad/.Find x" strIters "`nC#: .ToUpper/.Replace/.Trim/.PadLeft/.IndexOf x" strIters)
     AddLib("Descolada String", "5 ops x10K", ahkMs, csMs, "Chained string methods", "ToUpper/Replace/Trim/LPad/Find")
 
-    St("[18/30] Descolada String -- RegExMatchAll x1K...")
+    Step("Descolada String -- RegExMatchAll x1K...")
     regText := "Email: user@test.com, admin@site.org, info@example.com, support@help.net"
     reIters := 1000
     t1 := QPCms()
@@ -769,7 +803,7 @@ RunAll() {
     ; ======================================================================
     ; 8. Descolada Map.ahk
     ; ======================================================================
-    St("[19/30] Descolada Map -- Filter+Count x1K...")
+    Step("Descolada Map -- Filter+Count x1K...")
     testMap := Map()
     Loop 1000
         testMap["key" A_Index] := A_Index
@@ -788,7 +822,7 @@ RunAll() {
     ; ======================================================================
     ; 9. Descolada Misc.ahk
     ; ======================================================================
-    St("[20/30] Descolada Misc -- Range x5K...")
+    Step("Descolada Misc -- Range x5K...")
     rgIters := 5000
     t1 := QPCms()
     Loop rgIters {
@@ -804,7 +838,7 @@ RunAll() {
     ; ======================================================================
     ; 10. thqby ComVar
     ; ======================================================================
-    St("[21/30] thqby ComVar -- Create x10K...")
+    Step("thqby ComVar -- Create x10K...")
     cvIters := 10000
     t1 := QPCms()
     Loop cvIters {
@@ -819,7 +853,7 @@ RunAll() {
     ; ======================================================================
     ; 11. thqby DeepClone
     ; ======================================================================
-    St("[22/30] thqby DeepClone -- Clone nested x1K...")
+    Step("thqby DeepClone -- Clone nested x1K...")
     ; Build a nested object
     nested := { name: "root", data: [1, 2, 3], child: { name: "child1", child: { name: "child2", values: [10, 20, 30] } } }
     dcIters := 1000
@@ -835,19 +869,19 @@ RunAll() {
     ; 12. TreeNavigator (YOUR library!)
     ; ======================================================================
     if treeRawData != "" {
-        St("[23/30] TreeNavigator -- Class Parse...")
+        Step("TreeNavigator -- Class Parse...")
         t1 := QPCms()
         classTree := TreeNavigator.ParseByClass(treeRawData)
         ahkParseClass := QPCms() - t1
         AddLib("TreeNavigator", "ParseByClass", ahkParseClass, 0, "O(1) hash-indexed tree", "TreeNavigator.ParseByClass(rawData)")
 
-        St("[24/30] TreeNavigator -- Path Parse...")
+        Step("TreeNavigator -- Path Parse...")
         t1 := QPCms()
         pathTree := TreeNavigator.ParseByPath(treeRawData)
         ahkParsePath := QPCms() - t1
         AddLib("TreeNavigator", "ParseByPath", ahkParsePath, 0, "Path-based tree build", "TreeNavigator.ParseByPath(rawData)")
 
-        St("[25/30] TreeNavigator -- FlatMap Parse...")
+        Step("TreeNavigator -- FlatMap Parse...")
         t1 := QPCms()
         flatMap := TreeNavigator.ParseByFlatMap(treeRawData)
         ahkParseFM := QPCms() - t1
@@ -856,11 +890,11 @@ RunAll() {
         ; C# parse for comparison
         r := StrSplit(EcoBench.TreeParse(treeRawData), "|")
         csParseMs := ToNum(r[1])
-        AddResult("Tree Parse", "TreeNavigator", Round(ahkParseFM, 1), csParseMs, "AHK: TreeNavigator.ParseByFlatMap() -- O(1) indexed`nC#: Dictionary<string,string> parse`nNodes: " r[3] " | Unique names: " r[2] "`nYour FlatMap is the fastest parse method!")
+        AddResult("Tree Parse", "TreeNavigator", Round(ahkParseFM, 1), csParseMs, "AHK: TreeNavigator.ParseByFlatMap() -- O(1) indexed`nC#: Dictionary<string,string> parse`nNodes: " r[3] " | Unique names: " r[2] "`nAHK parse methods (ms): Class " Round(ahkParseClass, 1) " | Path " Round(ahkParsePath, 1) " | FlatMap " Round(ahkParseFM, 1))
 
         ; Search benchmarks -- deep target
         navIters := 500
-        St("[26/30] TreeNavigator -- Search deep x500...")
+        Step("TreeNavigator -- Search deep x500...")
 
         ; AHK Class method
         t1 := QPCms()
@@ -888,7 +922,7 @@ RunAll() {
         AddResult("Tree Search Deep", "TreeNavigator", Round(ahkSearchClass, 1), csSearchMs, "AHK: TreeNavigator.GetPathToNode() O(1) x" navIters "`nC#: Pre-built parent pointers (same algo) x" navIters "`n`nYour Class method: " Round(ahkSearchClass, 2) "ms`nYour Path method: " Round(ahkSearchPath, 2) "ms`nYour FlatMap method: " Round(ahkSearchFM, 2) "ms")
 
         ; Search non-existent (worst case)
-        St("[27/30] TreeNavigator -- Search miss x500...")
+        Step("TreeNavigator -- Search miss x500...")
         t1 := QPCms()
         Loop navIters
             TreeNavigator.GetPathToNode(classTree, "THIS_DOES_NOT_EXIST_123")
@@ -924,16 +958,25 @@ RunAll() {
         ahkDFS := QPCms() - t1
         r := StrSplit(EcoBench.TreeDFS(treeRawData, Chr(0x7389) Chr(0x7C73) Chr(0x7CC1)), "|")
         csDFS := ToNum(r[1])
-        AddResult("Tree DFS Brute", "TreeNavigator", Round(ahkDFS, 1), csDFS, "Brute-force linear scan x" dfsIters "`nAHK: for-loop through " freshTree.Length " nodes`nC#: foreach through split lines`n`nThis is what happens WITHOUT your O(1) index!")
+        AddResult("Tree DFS Brute", "TreeNavigator", Round(ahkDFS, 1), csDFS, "Brute-force linear scan x" dfsIters "`nAHK: for-loop through " freshTree.Length " nodes`nC#: foreach through split lines")
         AddLib("TreeNavigator", "DFS brute x10", ahkDFS, csDFS, "Linear scan " freshTree.Length " nodes", "for node in flatArray")
 
-        ; --- O(1) vs DFS speedup comparison ---
-        St("TreeNavigator -- O(1) vs DFS speedup...")
+        ; --- O(1) index vs DFS scan: BOTH measured with the same iteration count (no extrapolation) ---
+        St("TreeNavigator -- O(1) vs DFS (measured x" navIters " each)...")
         t1 := QPCms()
         Loop navIters
             TreeNavigator.GetPathToNode(classTree, Chr(0x7389) Chr(0x7C73) Chr(0x7CC1))
         ahkO1 := QPCms() - t1
-        AddLib("TreeNavigator", "O(1) index x500", ahkO1, Round(ahkDFS * 50, 1), "O(1) vs DFS projected", "O(1) is " Round((ahkDFS * 50) / Max(ahkO1, 0.01), 0) "x faster than DFS")
+        t1 := QPCms()
+        Loop navIters {
+            for node in freshTree {
+                if node.Name == Chr(0x7389) Chr(0x7C73) Chr(0x7CC1)
+                    break
+            }
+        }
+        ahkDFSNav := QPCms() - t1
+        ; The C# column is left empty (0): there is no C# measurement for this AHK-only comparison
+        AddLib("TreeNavigator", "O(1) vs DFS x500", ahkO1, 0, "Measured x" navIters ": O(1) " Round(ahkO1, 2) "ms vs DFS " Round(ahkDFSNav, 2) "ms", "O(1) index: " Round(ahkO1, 2) "ms | DFS scan: " Round(ahkDFSNav, 2) "ms (" Round(ahkDFSNav / Max(ahkO1, 0.01), 1) "x), both x" navIters)
 
         ; --- GetAllPaths (multi-result search) ---
         St("TreeNavigator -- GetAllPaths...")
@@ -973,13 +1016,14 @@ RunAll() {
         }
 
     } else {
+        stepNo += 5   ; keep the [n/44] counter in step: TreeNavigator steps 23-27 were skipped
         AddResult("Tree Parse", "TreeNavigator", 0, 0, "tree_data.txt not found in lib_bench/")
     }
 
     ; ======================================================================
     ; 13. ahk#.sqlite
     ; ======================================================================
-    St("[28/30] ahk#.sqlite -- CRUD...")
+    Step("ahk#.sqlite -- CRUD...")
     try {
         t1 := QPCms()
         db := SQLite(":memory:")
@@ -994,7 +1038,7 @@ RunAll() {
         ahkMs := QPCms() - t1
         r := StrSplit(EcoBench.SqliteOps(1000), "|")
         csMs := ToNum(r[1])
-        AddResult("SQLite CRUD 1K", "ahk#.sqlite", ahkMs, csMs, "AHK#: SQLite(':memory:') via winsqlite3`nCREATE + INSERT 1K + SELECT + SUM`nRows: " rows.Length " | SUM: " Round(total, 0))
+        AddResult("SQLite CRUD 1K", "ahk#.sqlite", ahkMs, csMs, "AHK#: SQLite(':memory:') via winsqlite3`nCREATE + INSERT 1K + SELECT + SUM`nRows: " rows.Length " | SUM: " Round(total, 0) "`nC# side: in-memory Dictionary simulation (no SQLite engine) -- NOT like-for-like")
         AddLib("ahk#.sqlite", "Full CRUD 1K", ahkMs, csMs, "winsqlite3 via bridge", "CREATE+INSERT+SELECT+SUM")
     } catch as e {
         AddResult("SQLite CRUD", "ahk#.sqlite", 0, 0, "Error: " e.Message)
@@ -1003,7 +1047,7 @@ RunAll() {
     ; ======================================================================
     ; 14. COM libs (MSXML2 + Scripting.Dictionary)
     ; ======================================================================
-    St("[29/30] MSXML2 + COM Dict...")
+    Step("MSXML2 + COM Dict...")
     xmlStr := '<root><item id="1">Hello</item><item id="2">World</item></root>'
     xmlIters := 1000
     t1 := QPCms()
@@ -1019,7 +1063,7 @@ RunAll() {
     ; ======================================================================
     ; 15. jNizM CreateGUID
     ; ======================================================================
-    St("[30/38] jNizM GUID -- Generate x10K...")
+    Step("jNizM GUID -- Generate x10K...")
     guidIters := 10000
     t1 := QPCms()
     Loop guidIters
@@ -1033,7 +1077,7 @@ RunAll() {
     ; ======================================================================
     ; 16. jNizM FileCountLines
     ; ======================================================================
-    St("[31/38] jNizM FileCountLines...")
+    Step("jNizM FileCountLines...")
     countFile := A_ScriptFullPath
     t1 := QPCms()
     ahkLineCount := FileCountLines(countFile)
@@ -1047,7 +1091,7 @@ RunAll() {
     ; ======================================================================
     ; 17. jNizM FileFindString
     ; ======================================================================
-    St("[32/38] jNizM FileFindString...")
+    Step("jNizM FileFindString...")
     t1 := QPCms()
     found := FileFindString(countFile, "EcoBench")
     ahkMs := QPCms() - t1
@@ -1059,7 +1103,7 @@ RunAll() {
     ; ======================================================================
     ; 18. thqby Heap
     ; ======================================================================
-    St("[33/38] thqby Heap -- findHeap x1K...")
+    Step("thqby Heap -- findHeap x1K...")
     heapBuf := Buffer(256)
     heapIters := 1000
     t1 := QPCms()
@@ -1073,7 +1117,7 @@ RunAll() {
     ; ======================================================================
     ; 19. Raw buffer allocation (fair comparison)
     ; ======================================================================
-    St("[34/42] Buffer alloc 200x200 x100...")
+    Step("Buffer alloc 200x200 x100...")
     imgIters := 100
     t1 := QPCms()
     Loop imgIters
@@ -1086,7 +1130,7 @@ RunAll() {
     ; ======================================================================
     ; 20. GDI+ Bitmap create (C# has native advantage)
     ; ======================================================================
-    St("[35/42] GDI+ Bitmap create x100...")
+    Step("GDI+ Bitmap create x100...")
     t1 := QPCms()
     hGdipMod := DllCall("LoadLibrary", "Str", "gdiplus", "Ptr")
     gdipSI := Buffer(A_PtrSize = 8 ? 24 : 16, 0)
@@ -1107,7 +1151,7 @@ RunAll() {
     ; ======================================================================
     ; 21. WinClip -- Clipboard manipulation
     ; ======================================================================
-    St("[36/42] WinClip -- Clipboard ops...")
+    Step("WinClip -- Clipboard ops...")
     wc := WinClip()
     wcIters := 1000
     t1 := QPCms()
@@ -1121,7 +1165,7 @@ RunAll() {
     AddLib("WinClip", "Set+Get x1K", ahkMs, csMs, "Clipboard class", "WinClip.SetText() + GetText()")
 
     ; Clipboard format enumeration
-    St("[37/42] WinClip -- Format snap...")
+    Step("WinClip -- Format snap...")
     wc.SetText("Test data for format snap")
     t1 := QPCms()
     Loop wcIters
@@ -1134,7 +1178,7 @@ RunAll() {
     ; ======================================================================
     ; 22. COM Scripting.Dictionary
     ; ======================================================================
-    St("[38/42] COM Dict 10K...")
+    Step("COM Dict 10K...")
     dIters := 10000
     t1 := QPCms()
     dict := ComObject("Scripting.Dictionary")
@@ -1152,7 +1196,7 @@ RunAll() {
     ; ======================================================================
     ; 23. WMI
     ; ======================================================================
-    St("[39/45] WMI Processes...")
+    Step("WMI Processes...")
     t1 := QPCms()
     wmi := ComObject("WbemScripting.SWbemLocator").ConnectServer()
     procs := wmi.ExecQuery("SELECT Name FROM Win32_Process")
@@ -1168,7 +1212,7 @@ RunAll() {
     ; ======================================================================
     ; 23b. AHK Competitive: PCRE RegEx Match (Short String)
     ; ======================================================================
-    St("[40/45] RegEx Match x10K (Competitive)...")
+    Step("RegEx Match x10K (Competitive)...")
     testText := "The ticket number is 49204 in the system"
     itersRegex := 10000
     t1 := QPCms()
@@ -1179,12 +1223,12 @@ RunAll() {
     ahkMs := QPCms() - t1
     csMs := ToNum(EcoBench.RegexSmallMatch(testText, itersRegex))
     AddResult("RegEx Match 10K", "PCRE vs .NET", ahkMs, csMs, "AHK: RegExMatch() native PCRE x" . itersRegex . "`nC#: Regex.Match() managed x" . itersRegex)
-    AddLib("PCRE vs .NET", "Short Match x10K", ahkMs, csMs, "PCRE C++ beats managed JIT", "RegExMatch(text, '\d+')")
+    AddLib("PCRE vs .NET", "Short Match x10K", ahkMs, csMs, "Native PCRE vs .NET Regex (short match)", "RegExMatch(text, '\d+')")
 
     ; ======================================================================
     ; 23c. AHK Competitive: Win32 DLL Call (GetTickCount)
     ; ======================================================================
-    St("[41/45] Win32 DllCall GetTickCount (Competitive)...")
+    Step("Win32 DllCall GetTickCount (Competitive)...")
     itersDll := 20000
     t1 := QPCms()
     Loop itersDll {
@@ -1193,12 +1237,12 @@ RunAll() {
     ahkMs := QPCms() - t1
     csMs := ToNum(EcoBench.Win32DllCall(itersDll))
     AddResult("DllCall kernel32", "Win32 DLL Call", ahkMs, csMs, "AHK: DllCall('kernel32\GetTickCount') x" . itersDll . "`nC#: DllImport GetTickCount() x" . itersDll)
-    AddLib("Win32 DLL Call", "kernel32 x20K", ahkMs, csMs, "AHK C++ thin DLL binding layer", "DllCall('kernel32\GetTickCount')")
+    AddLib("Win32 DLL Call", "kernel32 x20K", ahkMs, csMs, "DllCall vs P/Invoke (same API)", "DllCall('kernel32\GetTickCount')")
 
     ; ======================================================================
     ; 23d. AHK Competitive: OS FileExist Check
     ; ======================================================================
-    St("[42/45] OS FileExist Check (Competitive)...")
+    Step("OS FileExist Check (Competitive)...")
     tempFile := A_ScriptFullPath
     itersFile := 2000
     t1 := QPCms()
@@ -1208,12 +1252,12 @@ RunAll() {
     ahkMs := QPCms() - t1
     csMs := ToNum(EcoBench.OsFileExist(tempFile, itersFile))
     AddResult("FileExist 2K", "OS File Check", ahkMs, csMs, "AHK: FileExist() native C++ loop x" . itersFile . "`nC#: File.Exists() managed loop x" . itersFile)
-    AddLib("OS File Check", "FileExist x2K", ahkMs, csMs, "AHK C++ native file check", "FileExist(path)")
+    AddLib("OS File Check", "FileExist x2K", ahkMs, csMs, "FileExist vs File.Exists", "FileExist(path)")
 
     ; ======================================================================
     ; 24. C# Exclusive
     ; ======================================================================
-    St("[43/45] C# Exclusive -- Async Parallel...")
+    Step("C# Exclusive -- Async Parallel...")
     ; Measure sequential execution in AHK as the comparative "next best thing"
     t1 := QPCms()
     Loop 10 {
@@ -1224,9 +1268,9 @@ RunAll() {
     ahkMs := QPCms() - t1
     r := StrSplit(EcoBench.AsyncParallel(), "|")
     csMs := ToNum(r[1])
-    AddResult("Async Parallel", ".NET Task.Run", ahkMs, csMs, "C# .NET: Task.Run() x10 parallel CPU tasks`nAHK v2: Loop 10 x 1,000,000 sequential (next best thing)")
+    AddResult("Async Parallel", ".NET Task.Run", ahkMs, csMs, "NOT like-for-like: C# runs 10 CPU tasks in parallel via Task.Run(); AHK v2 has no parallel equivalent, so it runs the same work sequentially (Loop 10 x 1,000,000). Excluded from the speedup summary.")
 
-    St("[44/45] C# Exclusive -- LINQ...")
+    Step("C# Exclusive -- LINQ...")
     ; Measure linear loop object generation, filter, and reverse-take in AHK
     t1 := QPCms()
     data := []
@@ -1249,14 +1293,15 @@ RunAll() {
     ahkMs := QPCms() - t1
     r := StrSplit(EcoBench.LinqOps(100000), "|")
     csMs := ToNum(r[1])
-    AddResult("LINQ 100K", ".NET LINQ", ahkMs, csMs, "C# .NET: LINQ O(1) query decorators x100K`nAHK v2: Object array push + linear scan + take 100 (next best thing)")
+    AddResult("LINQ 100K", ".NET LINQ", ahkMs, csMs, "NOT like-for-like: C# uses LINQ over 100K items (lazy query operators); AHK builds object arrays and scans them eagerly. Different algorithms; excluded from the speedup summary.")
 
     ; ==== Final Render & Display ==========================================
     St("Rendering display...")
     UpdateDisplay()
 
     btnRun.Enabled := true
-    statusText.Value := "Done -- Boot: " bootMs "ms (Compile: " compileMs "ms, JIT: " jitMs "ms) | " allResults.Length " tests benchmarked (" compileChoice ", " jitChoice ")"
+    sm := SpeedupSummary()
+    statusText.Value := "Done -- " allResults.Length " rows | geo-mean speedup " Round(sm.geo, 1) "x over " sm.count " like-for-like tests (" sm.skipped " not like-for-like excluded) | Boot " bootMs "ms (" compileChoice ", " jitChoice ")"
 }
 
 global ahkLineMap := Map(), csLineMap := Map()

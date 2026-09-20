@@ -1,4 +1,4 @@
-﻿;; AHK# Example 19 — Parallel Mandelbrot Fractal Explorer
+﻿;; AHK# — Parallel Mandelbrot Fractal Explorer
 ;; Demonstrates raw multi-core C# processing, Parallel.For, and native Bitmap memory manipulation.
 ;; C# calculates millions of math operations instantly, AHK handles the UI!
 

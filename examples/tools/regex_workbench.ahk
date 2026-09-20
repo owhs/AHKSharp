@@ -20,7 +20,9 @@ class RegexEngine extends _CSModule {
                 if (options.Contains("m")) opts |= RegexOptions.Multiline;
                 if (options.Contains("s")) opts |= RegexOptions.Singleline;
 
-                var matches = Regex.Matches(input, pattern, opts);
+                // 2 second match timeout: a pattern with catastrophic backtracking must not hang the GUI
+                var regex = new Regex(pattern, opts, System.TimeSpan.FromSeconds(2));
+                var matches = regex.Matches(input);
                 if (matches.Count == 0) return "NO_MATCH";
 
                 var lines = matches.Cast<Match>().Select((m, idx) => {
@@ -31,7 +33,10 @@ class RegexEngine extends _CSModule {
                     string gs = groups.Any() ? " [" + string.Join(", ", groups) + "]" : "";
                     return idx + "|" + m.Index + "|" + m.Length + "|" + m.Value + gs;
                 });
-                return string.Join("\n", lines);
+                return string.Join("\n", lines.ToArray());
+            }
+            catch (RegexMatchTimeoutException) {
+                return "ERROR|Match timed out after 2 seconds (possible catastrophic backtracking in the pattern).";
             }
             catch (System.Exception ex) {
                 return "ERROR|" + ex.Message;
@@ -43,7 +48,11 @@ class RegexEngine extends _CSModule {
                 RegexOptions opts = RegexOptions.None;
                 if (options.Contains("i")) opts |= RegexOptions.IgnoreCase;
                 if (options.Contains("m")) opts |= RegexOptions.Multiline;
-                return Regex.Replace(input, pattern, replacement, opts);
+                var regex = new Regex(pattern, opts, System.TimeSpan.FromSeconds(2));
+                return regex.Replace(input, replacement);
+            }
+            catch (RegexMatchTimeoutException) {
+                return "ERROR: Replace timed out after 2 seconds (possible catastrophic backtracking in the pattern).";
             }
             catch (System.Exception ex) {
                 return "ERROR: " + ex.Message;

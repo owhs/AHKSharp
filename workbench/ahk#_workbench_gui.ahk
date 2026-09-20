@@ -2,41 +2,70 @@
 ; MAIN GUI CONSTRUCTION
 ; ═══════════════════════════════════════════════════════════════════════════════
 
-global hUxtheme := DllCall("LoadLibrary", "str", "uxtheme.dll", "ptr")
-global pAllowDarkModeForWindow := 0
-try {
-    if hUxtheme {
-        ; Ordinal 135: SetPreferredAppMode
-        pSetPreferredAppMode := DllCall("GetProcAddress", "ptr", hUxtheme, "ptr", 135, "ptr")
-        if pSetPreferredAppMode
-            DllCall(pSetPreferredAppMode, "int", 2) ; 2 = ForceDark
+WB_InitDarkMode()
 
-        ; Ordinal 136: FlushMenuThemes
-        pFlushMenuThemes := DllCall("GetProcAddress", "ptr", hUxtheme, "ptr", 136, "ptr")
-        if pFlushMenuThemes
-            DllCall(pFlushMenuThemes)
+; The workbench reports compile errors in its own panes, so suppress the library's modal error window
+try CS.Config.ShowErrorGui := false
 
-        ; Ordinal 133: AllowDarkModeForWindow
-        pAllowDarkModeForWindow := DllCall("GetProcAddress", "ptr", hUxtheme, "ptr", 133, "ptr")
-    }
-} catch {
-}
+; Resize support: controls registered with WB_Anchor follow the window (see OnMainSize)
+global g_anchors := []
+global g_baseW := 0             ; client size the layout was designed for (pixels)
+global g_baseH := 0
+global g_lastSize := ""         ; last normal (not maximized) client size — saved on exit
+global g_runBusy := false       ; a scratchpad run is in progress
+global g_runs := []             ; AHK Script processes started from the scratchpad and still running
+global g_historyMax := 15       ; run history length kept in workbench.ini
+global g_userSnipHeader := false ; "My Snippets" separator already added to the snippet list
+global g_nugetReqId := 0        ; id of the newest NuGet search — older (stale) responses are ignored
 
-g := Gui("-Resize", "AHK# Developer Studio")
-if pAllowDarkModeForWindow
-    try DllCall(pAllowDarkModeForWindow, "ptr", g.hwnd, "int", 1) ; AllowDarkModeForWindow (enables dark scrollbars for child controls)
+g := Gui("+Resize", "AHK# Developer Studio")
+g.Opt("+MinSize900x560")
+WB_DarkWindow(g)
 g.BackColor := "0x0f0f1a"
 g.MarginX := 8
 g.MarginY := 8
 
-try {
-    if (VerCompare(A_OSVersion, "10.0.17763") >= 0) {
-        attr := 19
-        if (VerCompare(A_OSVersion, "10.0.18985") >= 0)
-            attr := 20
-        DllCall("dwmapi\DwmSetWindowAttribute", "ptr", g.hwnd, "int", attr, "int*", true, "int", 4)
+; Register a control so it follows window resizes.
+; spec: any of  x y w h  optionally followed by a fraction of the size change (default 1),
+;       e.g. "w h" grows with the window, "y.5" moves half as far as the window grows.
+WB_Anchor(ctrl, spec) {
+    a := {ctrl: ctrl, fx: 0, fy: 0, fw: 0, fh: 0, x0: 0, y0: 0, w0: 0, h0: 0}
+    pos := 1
+    while RegExMatch(spec, "i)([xywh])(\d*\.?\d*)", &m, pos) {
+        a.%"f" . StrLower(m[1])% := (m[2] == "") ? 1 : Number(m[2])
+        pos := m.Pos + Max(m.Len, 1)
     }
-} catch {
+    g_anchors.Push(a)
+    return ctrl
+}
+
+WB_CaptureAnchors() {
+    for a in g_anchors {
+        a.ctrl.GetPos(&x, &y, &w, &h)
+        a.x0 := x
+        a.y0 := y
+        a.w0 := w
+        a.h0 := h
+    }
+}
+
+OnMainSize(guiObj, minMax, width, height) {
+    global g_lastSize
+    if (minMax == -1 || g_baseW == 0)
+        return
+    if (minMax == 0)
+        g_lastSize := [width, height]
+    dw := width - g_baseW
+    dh := height - g_baseH
+    for a in g_anchors {
+        try a.ctrl.Move(Round(a.x0 + a.fx * dw), Round(a.y0 + a.fy * dh)
+            , Max(4, Round(a.w0 + a.fw * dw)), Max(4, Round(a.h0 + a.fh * dh)))
+    }
+    SetTimer(WB_RedrawMain, -80)    ; debounced: transparent labels need a parent repaint
+}
+
+WB_RedrawMain() {
+    DllCall("RedrawWindow", "ptr", g.Hwnd, "ptr", 0, "ptr", 0, "uint", 0x185)
 }
 
 ; ── Title Bar ─────────────────────────────────────────────────────────────────
@@ -51,7 +80,7 @@ tabs := g.Add("Tab2", "x0 y0 w0 h0 -Wrap -TabStop",
 tabs.UseTab()
 
 ; ── Premium Unified Background Card Panel ─────────────────────────────────────
-g.Add("Text", "x10 y38 w1120 h680 Background0x12121f +Border")
+WB_Anchor(g.Add("Text", "x10 y38 w1120 h680 Background0x12121f +Border"), "w h")
 
 ; ── Premium Tab Button Custom Navigation ──────────────────────────────────────
 customTabs := []
@@ -59,7 +88,7 @@ tabNames := ["Examples", "Scratchpad", "Type Explorer", "NuGet", "Precompiler", 
 global activeTabIndex := 1
 
 ; Draw a beautiful background bar for the tabs
-g.Add("Text", "x10 y5 w1120 h28 Background0x1a1a2e +Border")
+WB_Anchor(g.Add("Text", "x10 y5 w1120 h28 Background0x1a1a2e +Border"), "w")
 
 for i, name in tabNames {
     xPos := 12 + (i - 1) * 111
@@ -96,32 +125,44 @@ OnTabClick(ctrl, *) {
     tabs.Choose(activeTabIndex)
 
     ; Call tab change events if any
-    if (activeTabIndex == 6)
+    if (activeTabIndex == TAB_CACHE)
         OnCacheRefresh()
-    else if (activeTabIndex == 7)
+    else if (activeTabIndex == TAB_CLR)
         OnRefreshCLR()
-    else if (activeTabIndex == 4)
+    else if (activeTabIndex == TAB_NUGET)
         OnRefreshInstalled()
 }
 
 ; ═══════════════════════════════════════════════════════════════════════════════
 ; TAB 2 — INTERACTIVE SCRATCHPAD
 ; ═══════════════════════════════════════════════════════════════════════════════
-tabs.UseTab(2)
+tabs.UseTab(TAB_SCRATCH)
 
 g.SetFont("s9 c0x00d4ff", "Segoe UI")
 g.Add("Text", "x20 y50 w55 h22 BackgroundTrans", "Mode:")
 g.SetFont("s9 c0xd0d0e0", "Segoe UI")
-ddlMode := g.Add("DropDownList", "x75 y48 w150 Background0x1a1a2e", ["C# Expression", "C# Class", "AHK Script"])
-ddlMode.Choose(1)
+ddlMode := g.Add("DropDownList", "x75 y48 w130 Background0x1a1a2e", ["C# Expression", "C# Class", "AHK Script"])
+ddlMode.Choose(MODE_EXPR)
 
 g.SetFont("s9 c0x00d4ff", "Segoe UI")
-g.Add("Text", "x240 y50 w60 h22 BackgroundTrans", "Snippet:")
+g.Add("Text", "x215 y50 w60 h22 BackgroundTrans", "Snippet:")
 g.SetFont("s9 c0xd0d0e0", "Segoe UI")
-ddlSnippet := g.Add("DropDownList", "x305 y48 w250 Background0x1a1a2e", snippetNames)
+ddlSnippet := g.Add("DropDownList", "x275 y48 w215 Background0x1a1a2e", snippetNames)
 
-btnLoadSnippet := AddButton(g, "x565 y47 w100 h24", "Load Snippet")
+btnLoadSnippet := AddButton(g, "x498 y47 w96 h24", "Load Snippet")
 btnLoadSnippet.OnEvent("Click", OnLoadSnippet)
+
+btnSaveSnippet := AddButton(g, "x602 y47 w96 h24", "Save Snippet")
+btnSaveSnippet.OnEvent("Click", OnSaveSnippet)
+
+btnHistory := AddButton(g, "x706 y47 w80 h24", "History ▾")
+btnHistory.OnEvent("Click", OnHistoryClick)
+
+g.SetFont("s9 c0x00d4ff", "Segoe UI")
+g.Add("Text", "x800 y50 w60 h22 BackgroundTrans", "C# Ver:")
+g.SetFont("s9 c0xd0d0e0", "Segoe UI")
+ddlScratchVer := g.Add("DropDownList", "x862 y48 w110 Background0x1a1a2e", ["4.0 (default)", "5.0", "6.0", "7.0", "7.3"])
+ddlScratchVer.Choose(1)
 
 ; Code Editor
 g.SetFont("s9 c0x00d4ff", "Segoe UI")
@@ -131,34 +172,41 @@ edCode := g.Add("Edit", "x20 y98 w1090 h290 Multi WantTab VScroll HScroll Backgr
 
 ; Button Row
 g.SetFont("s10 c0xd0d0e0", "Segoe UI")
-btnRun := AddButton(g, "x20 y396 w120 h30", "▸ Run")
+btnRun := AddButton(g, "x20 y396 w100 h30", "▸ Run")
 btnRun.OnEvent("Click", OnRunCode)
 
-btnClearOutput := AddButton(g, "x150 y396 w120 h30", "Clear Output")
+btnStop := AddButton(g, "x128 y396 w90 h30", "■ Stop")
+btnStop.OnEvent("Click", OnStopScripts)
+
+btnClearOutput := AddButton(g, "x226 y396 w110 h30", "Clear Output")
 btnClearOutput.OnEvent("Click", (*) => edOutput.Value := "")
 
-btnUiaExplorer := AddButton(g, "x280 y396 w140 h30", "▸ UIA Explorer")
+btnUiaExplorer := AddButton(g, "x344 y396 w130 h30", "▸ UIA Explorer")
 btnUiaExplorer.OnEvent("Click", LaunchUiaExplorer)
 
-btnSendToPrecomp := AddButton(g, "x430 y396 w170 h30", "Send to Precompiler")
+btnSendToPrecomp := AddButton(g, "x482 y396 w160 h30", "Send to Precompiler")
 btnSendToPrecomp.OnEvent("Click", OnSendToPrecompiler)
 
+btnExportModule := AddButton(g, "x650 y396 w130 h30", "Export .ahk")
+btnExportModule.OnEvent("Click", OnExportModule)
+
 g.SetFont("s9 c0x6a6a8a", "Segoe UI")
-lblRunStatus := g.Add("Text", "x610 y402 w230 h20 BackgroundTrans", "Ready")
+lblRunStatus := g.Add("Text", "x790 y402 w320 h20 BackgroundTrans", "Ready")
 
 g.SetFont("s8 c0x4a5568", "Segoe UI")
-g.Add("Text", "x20 y428 w700 h16 BackgroundTrans", "💡 Tip: In C# Class mode, add  // NuGet: PackageName Version  to auto-install and reference NuGet packages.")
+lblScratchTip := g.Add("Text", "x20 y428 w1080 h16 BackgroundTrans", "💡 Ctrl+Enter or F5 runs the code.  In C# Class mode add  // NuGet: Package [Version]  (repeatable) or  // Reference: X.dll  to pull in packages and assemblies.")
 
 ; Output Area
 g.SetFont("s9 c0xa78bfa", "Segoe UI")
-g.Add("Text", "x20 y448 w200 h18 BackgroundTrans", "◆  Output")
+lblOutputHdr := g.Add("Text", "x20 y448 w200 h18 BackgroundTrans", "◆  Output")
 g.SetFont("s10 c0x4ade80", "Cascadia Code")
 edOutput := g.Add("Edit", "x20 y468 w1090 h240 Multi ReadOnly VScroll HScroll Background0x0d0d18 +Border -E0x200", "")
+SendMessage(0x00C5, 0, 0, edOutput)  ; EM_LIMITTEXT: lift the default 32K cap — script output can be long
 
 ; ═══════════════════════════════════════════════════════════════════════════════
 ; TAB 3 — .NET TYPE EXPLORER
 ; ═══════════════════════════════════════════════════════════════════════════════
-tabs.UseTab(3)
+tabs.UseTab(TAB_TYPES)
 
 g.SetFont("s10 c0xd0d0e0", "Segoe UI")
 btnBackType := AddButton(g, "x20 y48 w30 h24", "<")
@@ -193,7 +241,7 @@ lvTypes.OnEvent("DoubleClick", OnTypesDoubleClick)
 
 ; Snippet Generator
 g.SetFont("s9 c0xa78bfa", "Segoe UI")
-g.Add("Text", "x20 y546 w200 h18 BackgroundTrans", "◆  Generated AHK# Snippet")
+WB_Anchor(g.Add("Text", "x20 y546 w200 h18 BackgroundTrans", "◆  Generated AHK# Snippet"), "y")
 btnGenSnippet := AddButton(g, "x220 y543 w130 h22", "Generate Snippet")
 btnGenSnippet.OnEvent("Click", OnGenSnippet)
 
@@ -208,21 +256,21 @@ edSnippet := g.Add("Edit", "x20 y568 w1090 h100 Multi ReadOnly Background0x0d0d1
 
 ; Quick-search common types
 g.SetFont("s8 c0x6a6a8a", "Segoe UI")
-g.Add("Text", "x20 y682 BackgroundTrans", "Quick:")
+WB_Anchor(g.Add("Text", "x20 y682 BackgroundTrans", "Quick:"), "y")
 For i, qtype in ["System.Math", "System.IO.File", "System.IO.Path", "System.String", "System.DateTime", "System.Convert", "System.Environment", "System.Text.StringBuilder", "System.Net.WebClient"] {
     if (i > 1) {
         g.SetFont("c0x6a6a8a")
-        g.Add("Text", "x+8 y682 BackgroundTrans", "|")
+        WB_Anchor(g.Add("Text", "x+8 y682 BackgroundTrans", "|"), "y")
     }
     g.SetFont("c0x00d4ff")
-    lbl := g.Add("Text", "x+8 y682 BackgroundTrans", qtype)
+    lbl := WB_Anchor(g.Add("Text", "x+8 y682 BackgroundTrans", qtype), "y")
     lbl.OnEvent("Click", ((typeStr, *) => (edTypeName.Text := typeStr, OnExploreType())).Bind(qtype))
 }
 
 ; ═══════════════════════════════════════════════════════════════════════════════
 ; TAB 4 — NUGET PACKAGE MANAGER
 ; ═══════════════════════════════════════════════════════════════════════════════
-tabs.UseTab(4)
+tabs.UseTab(TAB_NUGET)
 
 g.SetFont("s9 c0x00d4ff", "Segoe UI")
 g.Add("Text", "x20 y50 w60 h22 BackgroundTrans", "Search:")
@@ -254,7 +302,7 @@ lblInstallStatus := g.Add("Text", "x195 y329 w400 h20 BackgroundTrans", "")
 
 ; Installed packages
 g.SetFont("s9 c0x00d4ff", "Segoe UI")
-g.Add("Text", "x20 y364 w200 h18 BackgroundTrans", "◆  Installed Packages")
+WB_Anchor(g.Add("Text", "x20 y364 w200 h18 BackgroundTrans", "◆  Installed Packages"), "y.4")
 
 btnRefreshPkgs := AddButton(g, "x230 y361 w100 h22", "Refresh")
 btnRefreshPkgs.OnEvent("Click", OnRefreshInstalled)
@@ -277,7 +325,7 @@ lvInstalled.OnEvent("ContextMenu", OnNuGetInstalledContextMenu)
 ; ═══════════════════════════════════════════════════════════════════════════════
 ; TAB 5 — CSMODULE PRECOMPILER STUDIO
 ; ═══════════════════════════════════════════════════════════════════════════════
-tabs.UseTab(5)
+tabs.UseTab(TAB_PRECOMP)
 
 g.SetFont("s9 c0x00d4ff", "Segoe UI")
 g.Add("Text", "x20 y50 w100 h22 BackgroundTrans", "Class Name:")
@@ -299,7 +347,7 @@ edPrecompCode := g.Add("Edit", "x20 y98 w1090 h330 Multi WantTab VScroll HScroll
 
 ; References
 g.SetFont("s9 c0x00d4ff", "Segoe UI")
-g.Add("Text", "x20 y436 w90 h22 BackgroundTrans", "References:")
+WB_Anchor(g.Add("Text", "x20 y436 w90 h22 BackgroundTrans", "References:"), "y.5")
 g.SetFont("s10 c0xd4d4e8", "Cascadia Code")
 edPrecompRefs := g.Add("Edit", "x115 y434 w700 h24 Background0x12121f +Border -E0x200", "")
 
@@ -316,7 +364,7 @@ btnSendSnippetToScratch.OnEvent("Click", OnSendPrecompSnippetToScratch)
 
 ; Status
 g.SetFont("s9 c0xa78bfa", "Segoe UI")
-g.Add("Text", "x20 y504 w200 h18 BackgroundTrans", "◆  Compilation Output")
+WB_Anchor(g.Add("Text", "x20 y504 w200 h18 BackgroundTrans", "◆  Compilation Output"), "y.5")
 g.SetFont("s10 c0x4ade80", "Cascadia Code")
 edPrecompOut := g.Add("Edit", "x20 y524 w1090 h180 Multi ReadOnly VScroll Background0x0d0d18 +Border -E0x200", "")
 
@@ -325,7 +373,7 @@ global g_precompAsmId := ""
 ; ═══════════════════════════════════════════════════════════════════════════════
 ; TAB 6 — CACHE MANAGER
 ; ═══════════════════════════════════════════════════════════════════════════════
-tabs.UseTab(6)
+tabs.UseTab(TAB_CACHE)
 
 ; Stats
 g.SetFont("s10 c0xfbbf24 Bold", "Segoe UI")
@@ -347,24 +395,27 @@ lvCache.ModifyCol(4, 580)
 
 ; Buttons
 g.SetFont("s10 c0xd0d0e0", "Segoe UI")
-btnCacheRefresh := AddButton(g, "x20 y662 w120 h30", "Refresh")
+btnCacheRefresh := AddButton(g, "x20 y662 w110 h30", "Refresh")
 btnCacheRefresh.OnEvent("Click", OnCacheRefresh)
 
-btnCacheDelete := AddButton(g, "x150 y662 w160 h30", "Delete Selected")
+btnCacheDelete := AddButton(g, "x140 y662 w150 h30", "Delete Selected")
 btnCacheDelete.OnEvent("Click", OnCacheDelete)
 
+btnCacheCleanUnused := AddButton(g, "x300 y662 w150 h30", "Clean Unused")
+btnCacheCleanUnused.OnEvent("Click", OnCacheCleanUnused)
+
 g.SetFont("s10 c0xf87171", "Segoe UI")
-btnCacheClearAll := AddButton(g, "x320 y662 w160 h30", "Clear ALL Cache")
+btnCacheClearAll := AddButton(g, "x460 y662 w150 h30", "Clear ALL Cache")
 btnCacheClearAll.OnEvent("Click", OnCacheClearAll)
 
 g.SetFont("s9 c0x6a6a8a", "Segoe UI")
-g.Add("Text", "x500 y667 w500 h22 BackgroundTrans",
-    "Note: Clearing cache forces re-compilation next time modules are loaded.")
+WB_Anchor(g.Add("Text", "x625 y667 w485 h22 BackgroundTrans",
+    "Note: cache files are only deleted by Clean Unused / Clear ALL — never by Force GC."), "y")
 
 ; ═══════════════════════════════════════════════════════════════════════════════
 ; TAB 7 — CLR LIVE DIAGNOSTICS
 ; ═══════════════════════════════════════════════════════════════════════════════
-tabs.UseTab(7)
+tabs.UseTab(TAB_CLR)
 
 g.SetFont("s11 c0x00d4ff Bold", "Segoe UI")
 g.Add("Text", "x20 y50 w300 h24 BackgroundTrans", "◆  Managed Heap")
@@ -422,7 +473,7 @@ lvAssemblies.ModifyCol(5, 330)
 ; ═══════════════════════════════════════════════════════════════════════════════
 ; TAB 8 — MARSHALLING INSPECTOR
 ; ═══════════════════════════════════════════════════════════════════════════════
-tabs.UseTab(8)
+tabs.UseTab(TAB_MARSH)
 
 g.SetFont("s9 c0x00d4ff", "Segoe UI")
 g.Add("Text", "x20 y51 w80 h20 BackgroundTrans", "Example:")
@@ -438,7 +489,7 @@ btnInspectMarsh.OnEvent("Click", OnInspectMarsh)
 g.SetFont("s9 c0x00d4ff", "Segoe UI")
 g.Add("Text", "x20 y86 w400 h18 BackgroundTrans", "◆  AHK Expression")
 g.SetFont("s9 c0xa78bfa", "Segoe UI")
-g.Add("Text", "x560 y86 w400 h18 BackgroundTrans", "◆  .NET Resolution (Interactive TreeView)")
+WB_Anchor(g.Add("Text", "x560 y86 w400 h18 BackgroundTrans", "◆  .NET Resolution (Interactive TreeView)"), "x.5")
 
 g.SetFont("s10 c0xd4d4e8", "Cascadia Code")
 global edMarshAhk := g.Add("Edit", "x20 y106 w520 h600 Multi WantTab VScroll HScroll Background0x12121f +Border -E0x200", '[1, 2, "three"]')
@@ -451,7 +502,7 @@ cbMarshExample.OnEvent("Change", (*) => edMarshAhk.Value := cbMarshExample.Text)
 ; ═══════════════════════════════════════════════════════════════════════════════
 ; TAB 9 — OVERLOAD PREDICTOR
 ; ═══════════════════════════════════════════════════════════════════════════════
-tabs.UseTab(9)
+tabs.UseTab(TAB_OVERLOADS)
 
 g.SetFont("s9 c0x00d4ff", "Segoe UI")
 g.Add("Text", "x20 y50 w80 h22 BackgroundTrans", "Type Name:")
@@ -468,7 +519,7 @@ btnPredict := AddButton(g, "x900 y47 w210 h26", "Predict")
 btnPredict.OnEvent("Click", OnPredictOverload)
 
 g.SetFont("s9 c0x00d4ff", "Segoe UI")
-g.Add("Text", "x20 y78 w400 h18 BackgroundTrans", '◆  AHK Arguments Array (JSON array format: ["123", 16] )')
+g.Add("Text", "x20 y78 w800 h18 BackgroundTrans", '◆  Arguments — an AHK literal list, e.g.  ["123", 16]   or   [1, "two", true, [3, 4]]')
 g.SetFont("s10 c0xd4d4e8", "Cascadia Code")
 global edPredArgs := g.Add("Edit", "x20 y98 w1090 h80 Multi WantTab Background0x12121f +Border -E0x200", '["123", 16]')
 
@@ -480,7 +531,7 @@ global edPredResult := g.Add("Edit", "x20 y206 w1090 h500 Multi ReadOnly Backgro
 ; ═══════════════════════════════════════════════════════════════════════════════
 ; TAB 10 — VISUAL WRAPPER AUTO-GENERATOR
 ; ═══════════════════════════════════════════════════════════════════════════════
-tabs.UseTab(10)
+tabs.UseTab(TAB_WRAPPER)
 
 g.SetFont("s9 c0x00d4ff", "Segoe UI")
 g.Add("Text", "x20 y50 w90 h22 BackgroundTrans", "Assembly Path:")
@@ -509,7 +560,7 @@ g.SetFont("s9 c0xa78bfa", "Segoe UI")
 g.Add("Text", "x560 y78 w200 h18 BackgroundTrans", "◆  Runtime Wrapper (.ahk)")
 
 g.SetFont("s9 c0x22d3ee", "Segoe UI")
-g.Add("Text", "x840 y78 w200 h18 BackgroundTrans", "◆  IntelliSense Def (.d.ahk)")
+WB_Anchor(g.Add("Text", "x840 y78 w200 h18 BackgroundTrans", "◆  IntelliSense Def (.d.ahk)"), "x.5")
 
 g.SetFont("s9 c0x4ade80", "Cascadia Code")
 global edWrapOut := g.Add("Edit", "x560 y98 w270 h555 Multi ReadOnly VScroll HScroll Background0x0d0d18 +Border -E0x200", "")
@@ -529,7 +580,7 @@ btnDefSave.OnEvent("Click", OnDefSave)
 ; ═══════════════════════════════════════════════════════════════════════════════
 ; TAB 1 — EXAMPLES CATALOGUE
 ; ═══════════════════════════════════════════════════════════════════════════════
-tabs.UseTab(1)
+tabs.UseTab(TAB_EXAMPLES)
 
 g.SetFont("s9 c0x00d4ff", "Segoe UI")
 g.Add("Text", "x20 y50 w350 h22 BackgroundTrans", "◆  Examples Catalogue")
@@ -694,7 +745,7 @@ for ex in g_examplesList {
 lvExamples.Opt("+Redraw")
 
 g.SetFont("s8 c0x6a6a8a", "Segoe UI")
-g.Add("Text", "x20 y570 w360 h80 BackgroundTrans", "💡 Click any example in the scrollable catalogue on the left to see details and raw source code preview.`n`nClick 'Run' to execute in a standalone process.")
+WB_Anchor(g.Add("Text", "x20 y570 w360 h80 BackgroundTrans", "💡 Click any example in the scrollable catalogue on the left to see details and raw source code preview.`n`nClick 'Run' to execute in a standalone process."), "y")
 
 ; Right Column Preview Controls
 g.SetFont("s11 c0x00d4ff Bold", "Segoe UI")
@@ -723,6 +774,59 @@ tabs.UseTab()  ; Controls below are on all tabs
 g.SetFont("s8 c0x4a4a6a", "Segoe UI")
 lblStatus := g.Add("Text", "x15 y725 w1100 h18 BackgroundTrans",
     "AHK# Developer Studio ready  —  Bridge: " AHK_SHARP_VERSION "  —  CLR: " AHK_SHARP_CLR)
+
+; ── Resize behaviour ──────────────────────────────────────────────────────────
+; Extra window height/width is shared as described per control (see WB_Anchor).
+; Examples
+WB_Anchor(lvExamples, "h")
+WB_Anchor(lblExMode, "x")
+WB_Anchor(edExDesc, "w")
+WB_Anchor(edExCode, "w h")
+WB_Anchor(btnExRun, "y w")
+; Scratchpad: the editor and the output pane share the extra height
+WB_Anchor(edCode, "w h.5")
+for ac in [btnRun, btnStop, btnClearOutput, btnUiaExplorer, btnSendToPrecomp, btnExportModule, lblRunStatus, lblScratchTip, lblOutputHdr]
+    WB_Anchor(ac, "y.5")
+WB_Anchor(edOutput, "w y.5 h.5")
+; Type Explorer
+WB_Anchor(lvTypes, "w h")
+for ac in [btnGenSnippet, btnCopySnippet, btnSendToWrap]
+    WB_Anchor(ac, "y")
+WB_Anchor(edSnippet, "w y")
+; NuGet
+WB_Anchor(lvNuGetResults, "w h.4")
+for ac in [btnNuGetInstall, lblInstallStatus, btnRefreshPkgs, btnNuGetSendToWrap, btnNuGetRemove]
+    WB_Anchor(ac, "y.4")
+WB_Anchor(lvInstalled, "w y.4 h.6")
+; Precompiler
+WB_Anchor(edPrecompCode, "w h.5")
+WB_Anchor(edPrecompRefs, "w y.5")
+for ac in [btnCompile, btnExportDLL, btnSendSnippetToScratch]
+    WB_Anchor(ac, "y.5")
+WB_Anchor(edPrecompOut, "w y.5 h.5")
+; Cache
+WB_Anchor(lvCache, "w h")
+for ac in [btnCacheRefresh, btnCacheDelete, btnCacheCleanUnused, btnCacheClearAll]
+    WB_Anchor(ac, "y")
+; CLR Monitor
+WB_Anchor(lvAssemblies, "w h")
+; Marshalling
+WB_Anchor(edMarshAhk, "w.5 h")
+WB_Anchor(tvMarsh, "x.5 w.5 h")
+; Overloads
+WB_Anchor(btnPredict, "x")
+WB_Anchor(edPredArgs, "w")
+WB_Anchor(edPredResult, "w h")
+; Wrapper Gen
+WB_Anchor(lvWrapTypes, "h")
+WB_Anchor(btnWrapGen, "y.5")
+WB_Anchor(edWrapOut, "w.5 h")
+WB_Anchor(edWrapDef, "x.5 w.5 h")
+for ac in [btnWrapTest, btnWrapSave]
+    WB_Anchor(ac, "y")
+WB_Anchor(btnDefSave, "x.5 w.5 y")
+; Status bar
+WB_Anchor(lblStatus, "y w")
 
 ; Subclass procedure to dynamically paint ListView column headers with light grey text
 global lvSubclassCallback := CallbackCreate(LV_SubclassProc, "F", 6)
@@ -761,37 +865,8 @@ LV_SubclassProc(hWnd, uMsg, wParam, lParam, uIdSubclass, dwRefData) {
     return DllCall("Comctl32\DefSubclassProc", "Ptr", hWnd, "UInt", uMsg, "Ptr", wParam, "Ptr", lParam, "Ptr")
 }
 
-; Force dark mode for all controls (headers, scrollbars, dropdowns)
-for hwnd, ctrl in g {
-    ctrlType := Type(ctrl)
-
-    ; Skip custom tabs, custom buttons, examples controls, and the hidden logical tab control
-    if (ctrl.HasProp("isCustomTab") || ctrl.HasProp("isCustomButton") || ctrl.HasProp("isExampleCard") || ctrl.HasProp("isExampleCardChild") || ctrl == tabs)
-        continue
-
-    if (pAllowDarkModeForWindow)
-        try DllCall(pAllowDarkModeForWindow, "ptr", hwnd, "int", 1)
-
-    if (ctrlType == "Gui.DDL" || ctrlType == "Gui.ComboBox") {
-        try DllCall("uxtheme\SetWindowTheme", "ptr", hwnd, "wstr", "DarkMode_CFD", "ptr", 0)
-    } else if (ctrlType == "Gui.ListView") {
-        try DllCall("uxtheme\SetWindowTheme", "ptr", hwnd, "wstr", "Explorer", "ptr", 0)
-        try DllCall("Comctl32\SetWindowSubclass", "Ptr", hwnd, "Ptr", lvSubclassCallback, "Ptr", hwnd, "Ptr", 0)
-    } else if (ctrlType == "Gui.Edit" || ctrlType == "Gui.TreeView") {
-        try DllCall("uxtheme\SetWindowTheme", "ptr", hwnd, "wstr", "DarkMode_Explorer", "ptr", 0)
-    } else {
-        try DllCall("uxtheme\SetWindowTheme", "ptr", hwnd, "wstr", "DarkMode_Explorer", "ptr", 0)
-    }
-
-    if (ctrlType == "Gui.ListView") {
-        try {
-            headerHwnd := SendMessage(0x101F, 0, 0, hwnd) ; LVM_GETHEADER
-            if headerHwnd {
-                DllCall("uxtheme\SetWindowTheme", "ptr", headerHwnd, "wstr", "DarkMode_ItemsView", "ptr", 0)
-            }
-        }
-    }
-}
+; Force dark mode for all controls (headers, scrollbars, dropdowns) — shared helper
+WB_DarkenAll(g, tabs)
 
 ; Hook to color ComboBox/DropDownList popup menus dark
 OnMessage(0x0134, WM_CTLCOLORLISTBOX)
@@ -802,8 +877,42 @@ WM_CTLCOLORLISTBOX(wParam, lParam, msg, hwnd) {
     return brush
 }
 
-g.Show("w1140 h748")
-g.OnEvent("Close", (*) => ExitApp())
+; ── Restore saved settings, register hotkeys, show ────────────────────────────
+WB_LoadUserSnippets()
+WB_LoadSettings()
+
+; Ctrl+Enter / F5 run the active tab's code (only while the studio window is active)
+HotIf((*) => WinActive("ahk_id " g.Hwnd))
+Hotkey("^Enter", OnRunHotkey)
+Hotkey("F5", OnRunHotkey)
+HotIf()
+
+; The layout is designed for a 1140x748 client area at 96 DPI. Anchors work relative to that size in
+; real pixels, while the window itself is sized to fit the screen — so nothing overflows at 125-200% DPI.
+dpiScale := A_ScreenDPI / 96
+g_baseW := DllCall("MulDiv", "int", 1140, "int", A_ScreenDPI, "int", 96)
+g_baseH := DllCall("MulDiv", "int", 748, "int", A_ScreenDPI, "int", 96)
+WB_CaptureAnchors()
+
+maxW := Floor(A_ScreenWidth * 0.95 / dpiScale)
+maxH := Floor(A_ScreenHeight * 0.85 / dpiScale)
+winW := Min(1140, maxW)
+winH := Min(748, maxH)
+try {
+    savedW := Integer(IniRead(WB_IniPath(), "Window", "Width", 0))
+    savedH := Integer(IniRead(WB_IniPath(), "Window", "Height", 0))
+    if (savedW >= 900 && savedH >= 560) {
+        winW := Min(savedW, maxW)
+        winH := Min(savedH, maxH)
+    }
+}
+
+g.OnEvent("Size", OnMainSize)
+g.OnEvent("Close", WB_OnClose)
+g.Show("w" winW " h" winH " Center")
+g.GetClientPos(, , &clientW, &clientH)
+OnMainSize(g, 0, clientW, clientH)      ; apply the layout even if Windows sent no size message
+try WBSplash.Close()
 
 ; ── Initial Data Load ─────────────────────────────────────────────────────────
 SetTimer(InitialLoad, -200)
@@ -852,7 +961,8 @@ OnExRunClick(*) {
 
     SetStatus("Running standalone example '" ex.title "'...")
     try {
-        Run('"' A_AhkPath '" "' ex.path '"')
+        SplitPath(ex.path, , &exDir)
+        Run('"' A_AhkPath '" "' ex.path '"', exDir)
         SetStatus("Successfully launched '" ex.title "'")
     } catch as e {
         SetStatus("Failed to run example: " e.Message)
@@ -889,11 +999,11 @@ OnLoadSnippet(*) {
 
     ; Auto-select the correct mode
     if (info.mode == "C# Expression")
-        ddlMode.Choose(1)
+        ddlMode.Choose(MODE_EXPR)
     else if (info.mode == "C# Class")
-        ddlMode.Choose(2)
+        ddlMode.Choose(MODE_CLASS)
     else
-        ddlMode.Choose(3)
+        ddlMode.Choose(MODE_AHK)
 
     SetStatus("Loaded snippet: " name)
 }
@@ -907,20 +1017,46 @@ OnSendToPrecompiler(*) {
     }
 
     edPrecompCode.Value := code
-    OnTabClick(customTabs[5])  ; Switch to Precompiler Tab (index 5)
+    OnTabClick(customTabs[TAB_PRECOMP])
     SetStatus("Transferred C# code to Precompiler")
 }
 
 OnRunCode(*) {
+    global g_runBusy
+    if (g_runBusy) {
+        SetStatus("A run is already in progress")
+        return
+    }
     code := edCode.Value
-    if (code == "") {
+    if (Trim(code) == "") {
         AppendOutput("⚠ No code to run.")
         return
     }
 
     mode := ddlMode.Text
-    lblRunStatus.Value := "Running..."
+    g_runBusy := true
+    try {
+        WB_HistoryPush(mode, code)
+        RunScratch(code, mode)
+    } finally {
+        g_runBusy := false
+    }
+}
+
+; F5 / Ctrl+Enter — runs whatever the active tab runs
+OnRunHotkey(*) {
+    if (activeTabIndex == TAB_SCRATCH)
+        OnRunCode()
+    else if (activeTabIndex == TAB_PRECOMP)
+        OnPrecompile()
+    else if (activeTabIndex == TAB_EXAMPLES)
+        OnExRunClick()
+}
+
+RunScratch(code, mode) {
     startTick := A_TickCount
+    lblRunStatus.Value := "Running..."
+    WB_Repaint()        ; compiling blocks the UI — make "Running..." visible first
 
     if (mode == "C# Expression") {
         try {
@@ -935,103 +1071,887 @@ OnRunCode(*) {
             AppendOutput("✗ " e.Message)
             lblRunStatus.Value := "Error — see output"
         }
+    } else if (mode == "C# Class") {
+        RunScratchClass(code, startTick)
+    } else if (mode == "AHK Script") {
+        RunScratchAhk(code)
     }
-    else if (mode == "C# Class") {
-        try {
-            className := "__WB_" A_TickCount
-            refs := ""
-            if RegExMatch(code, "im)//\s*NuGet:\s*([a-zA-Z0-9\.]+)(?:\s+([\d\.]+))?", &match) {
-                AppendOutput("📦 Resolving NuGet package: " match[1])
-                refs := CS.NuGet.Require(match[1], match[2] ? match[2] : "")
-            }
-            if RegExMatch(code, "im)//\s*Reference[s]?:\s*(.+)", &refMatch) {
-                customRefs := Trim(refMatch[1])
-                frameworkDir := A_WinDir "\Microsoft.NET\" (A_PtrSize == 8 ? "Framework64" : "Framework") "\v4.0.30319"
-                resolvedRefs := ""
-                for ref in StrSplit(customRefs, ";") {
-                    ref := Trim(ref)
-                    if (ref == "UIAutomationClient.dll" || ref == "UIAutomationTypes.dll" || ref == "WindowsBase.dll" || ref == "PresentationCore.dll" || ref == "PresentationFramework.dll") {
-                        resolvedRefs .= (resolvedRefs == "" ? "" : ";") frameworkDir "\WPF\" ref
-                    } else {
-                        resolvedRefs .= (resolvedRefs == "" ? "" : ";") ref
-                    }
-                }
-                refs := (refs == "") ? resolvedRefs : refs ";" resolvedRefs
-                AppendOutput("📎 Referencing assemblies: " resolvedRefs)
-            }
-            ; Extract using directives to place them outside the class wrapper
-            usings := "using System; using System.Linq; using System.Collections.Generic;"
-            cleanCode := ""
-            Loop Parse, code, "`n", "`r" {
-                line := Trim(A_LoopField)
-                if (SubStr(line, 1, 6) == "using " && SubStr(line, -1) == ";") {
-                    usings .= " " line
-                } else {
-                    cleanCode .= A_LoopField "`n"
-                }
-            }
-            fullCode := usings "`npublic class " className "`n{`n" cleanCode "`n}"
-            bridge := _AhkSharpEngine.Boot()
-            asmId := bridge.CompileModule(fullCode, refs)
-            result := bridge.InvokeModule(asmId, className, "Run", "")
-            elapsed := A_TickCount - startTick
-            AppendOutput("═══ C# Class ═══  [" elapsed "ms]  (class: " className ")")
-            AppendOutput("→ " (IsObject(result) ? String(result) : result))
-            lblRunStatus.Value := "Compiled and executed in " elapsed "ms"
-        } catch as e {
-            elapsed := A_TickCount - startTick
-            AppendOutput("═══ C# Class ERROR ═══  [" elapsed "ms]")
-            AppendOutput("✗ " e.Message)
-            lblRunStatus.Value := "Compilation/execution error"
+}
+
+RunScratchClass(code, startTick) {
+    offset := 0
+    try {
+        refs := WB_CollectRefs(code, AppendOutput)
+        csVer := WB_VersionValue(ddlScratchVer.Text)
+
+        ; Deterministic class name: identical code compiles once and is then served from the cache
+        className := "__WB_" WB_Hash(code "|" refs "|" csVer)
+        info := WB_BuildClassSource(code, className)
+        offset := info.offset
+
+        bridge := _AhkSharpEngine.Boot()
+        if (csVer == "")
+            asmId := bridge.CompileModule(info.src, refs)
+        else
+            asmId := bridge.CompileModuleVersioned(info.src, refs, csVer)
+        result := bridge.InvokeModule(asmId, info.className, info.method, "")
+
+        elapsed := A_TickCount - startTick
+        AppendOutput("═══ C# Class ═══  [" elapsed "ms]  (" info.className "." info.method ")")
+        AppendOutput("→ " (IsObject(result) ? String(result) : result))
+        lblRunStatus.Value := "Compiled and executed in " elapsed "ms"
+    } catch as e {
+        elapsed := A_TickCount - startTick
+        AppendOutput("═══ C# Class ERROR ═══  [" elapsed "ms]")
+        AppendOutput("✗ " WB_RemapCompilerLines(e.Message, offset))
+        lblRunStatus.Value := "Compilation/execution error"
+    }
+}
+
+RunScratchAhk(code) {
+    try {
+        job := WB_StartAhkScript(code)
+        AppendOutput("═══ AHK Script Started ═══  [PID " job.pid "]"
+            . (job.captured ? "" : "  (output capture unavailable)"))
+        lblRunStatus.Value := "Script running (PID " job.pid ")"
+    } catch as e {
+        AppendOutput("═══ AHK Script ERROR ═══")
+        AppendOutput("✗ " e.Message)
+        lblRunStatus.Value := "Launch error"
+    }
+}
+
+; ── C# helpers shared by the scratchpad and the precompiler ───────────────────
+
+; "4.0 (default)" -> "" (no Roslyn); "7.3" -> "7.3"
+WB_VersionValue(text) {
+    return (text == "" || text == "4.0 (default)") ? "" : text
+}
+
+WB_JoinRefs(a, b) {
+    if (a == "")
+        return b
+    if (b == "")
+        return a
+    return a ";" b
+}
+
+; Blank a piece of source (comments, string contents ...) but keep its length and its line breaks
+WB_Blank(s) {
+    return RegExReplace(s, "[^\r\n]", " ")
+}
+
+; // NuGet: Package [Version]  (repeatable; ids may contain - and _; versions may be pre-release)
+; // Reference: A.dll;B.dll    (repeatable)
+WB_ParseDirectives(code) {
+    d := {nuget: [], refs: []}
+    pos := 1
+    while RegExMatch(code, "im)^[ \t]*//[ \t]*NuGet:[ \t]*([\w.\-]+)(?:[ \t]+(\d[\w.\-+]*))?", &m, pos) {
+        d.nuget.Push({id: m[1], ver: m[2]})
+        pos := m.Pos + Max(m.Len, 1)
+    }
+    pos := 1
+    while RegExMatch(code, "im)^[ \t]*//[ \t]*References?:[ \t]*(.+)", &m, pos) {
+        d.refs.Push(Trim(m[1], " `t`r`n"))
+        pos := m.Pos + Max(m.Len, 1)
+    }
+    return d
+}
+
+; Expand well-known WPF assembly names to full paths; everything else is passed through
+WB_ResolveRefs(refLines) {
+    fwDir := A_WinDir "\Microsoft.NET\" (A_PtrSize == 8 ? "Framework64" : "Framework") "\v4.0.30319"
+    wpf := Map("uiautomationclient.dll", 1, "uiautomationtypes.dll", 1, "windowsbase.dll", 1
+        , "presentationcore.dll", 1, "presentationframework.dll", 1)
+    out := ""
+    for line in refLines {
+        for ref in StrSplit(line, ";") {
+            ref := Trim(ref)
+            if (ref == "")
+                continue
+            if wpf.Has(StrLower(ref))
+                ref := fwDir "\WPF\" ref
+            out .= (out == "" ? "" : ";") ref
         }
     }
-    else if (mode == "AHK Script") {
-        try {
-            ; Save to temp file and run with AHK
-            tmpFile := A_Temp "\ahk_wb_" A_TickCount ".ahk"
-            libDir := A_ScriptDir "\lib"
-            extDir := A_ScriptDir "\ext"
-            header := "#Requires AutoHotkey v2.0`n#SingleInstance Force`n"
-            header .= '#Include "' libDir '\ahk#.ahk"`n'
-            header .= '#Include "' extDir '\ahk#.http.ahk"`n'
-            ; Wrap user code in try/catch for robust error handling
-            header .= "`ntry {`n"
-            footer := "`n} catch as __wb_err {`n"
-                . "    __wb_msg := '❌ ' . Type(__wb_err) . '``n``n' . __wb_err.Message`n"
-                . "    if (__wb_err.Extra != '')`n"
-                . "        __wb_msg .= '``n``n▸ Value/Target: ' . __wb_err.Extra`n"
-                . "    if (__wb_err.What != '')`n"
-                . "        __wb_msg .= '``n▸ Function: ' . __wb_err.What`n"
-                . "    __wb_msg .= '``n▸ Line: ' . __wb_err.Line`n"
-                . "    if (__wb_err.Stack != '')`n"
-                . "        __wb_msg .= '``n``n── Call Stack ──``n' . __wb_err.Stack`n"
-                . "    MsgBox(__wb_msg, 'Workbench Script Error', 'Icon!')`n}`n"
-            FileAppend(header . code . footer, tmpFile, "UTF-8")
-            Run('"' A_AhkPath '" "' tmpFile '"')
-            elapsed := A_TickCount - startTick
-            AppendOutput("═══ AHK Script Launched ═══  [" elapsed "ms]")
-            AppendOutput("→ Script launched in new process")
-            AppendOutput("  File: " tmpFile)
-            lblRunStatus.Value := "Script launched"
-            ; Clean up after delay
-            SetTimer(() => (FileExist(tmpFile) ? FileDelete(tmpFile) : ""), -5000)
-        } catch as e {
-            AppendOutput("═══ AHK Script ERROR ═══")
-            AppendOutput("✗ " e.Message)
-            lblRunStatus.Value := "Launch error"
+    return out
+}
+
+; Installs/locates every // NuGet: package and returns the ';'-joined reference list
+WB_CollectRefs(code, logFn := "") {
+    d := WB_ParseDirectives(code)
+    refs := ""
+    for pkg in d.nuget {
+        if (logFn) {
+            verText := (pkg.ver != "") ? (" " pkg.ver) : ""
+            logFn("📦 Resolving NuGet package: " pkg.id verText)
+        }
+        pkgRefs := CS.NuGet.Require(pkg.id, pkg.ver)
+        refs := WB_JoinRefs(refs, pkgRefs)
+    }
+    if (d.refs.Length) {
+        resolved := WB_ResolveRefs(d.refs)
+        if (logFn)
+            logFn("📎 Referencing assemblies: " resolved)
+        refs := WB_JoinRefs(refs, resolved)
+    }
+    return refs
+}
+
+; Copy of `code` where comments, string/char literals and everything nested deeper than `keepDepth`
+; braces is blanked out. Same length and same line breaks as the input, so match positions map 1:1.
+WB_CSharpSkeleton(code, keepDepth := 0) {
+    out := ""
+    n := StrLen(code)
+    depth := 0
+    i := 1
+    while (i <= n) {
+        c := SubStr(code, i, 1)
+        nx := SubStr(code, i + 1, 1)
+        if (c == "/" && nx == "/") {
+            j := InStr(code, "`n", true, i)
+            if (!j)
+                j := n + 1
+            out .= WB_Blank(SubStr(code, i, j - i))
+            i := j
+        } else if (c == "/" && nx == "*") {
+            j := InStr(code, "*/", true, i + 2)
+            j := j ? j + 2 : n + 1
+            out .= WB_Blank(SubStr(code, i, j - i))
+            i := j
+        } else if (c == '"') {
+            verbatim := (i > 1 && SubStr(code, i - 1, 1) == "@")
+            j := i + 1
+            while (j <= n) {
+                ch := SubStr(code, j, 1)
+                if (verbatim) {
+                    if (ch == '"') {
+                        if (SubStr(code, j + 1, 1) == '"') {
+                            j += 2
+                            continue
+                        }
+                        break
+                    }
+                } else {
+                    if (ch == "\") {
+                        j += 2
+                        continue
+                    }
+                    if (ch == '"' || ch == "`n")
+                        break
+                }
+                j++
+            }
+            out .= WB_Blank(SubStr(code, i, Min(j, n) - i + 1))
+            i := j + 1
+        } else if (c == "'") {
+            j := i + 1
+            while (j <= n) {
+                ch := SubStr(code, j, 1)
+                if (ch == "\") {
+                    j += 2
+                    continue
+                }
+                if (ch == "'" || ch == "`n")
+                    break
+                j++
+            }
+            out .= WB_Blank(SubStr(code, i, Min(j, n) - i + 1))
+            i := j + 1
+        } else if (c == "{") {
+            out .= (depth <= keepDepth) ? "{" : " "
+            depth++
+            i++
+        } else if (c == "}") {
+            depth := Max(0, depth - 1)
+            out .= (depth <= keepDepth) ? "}" : " "
+            i++
+        } else {
+            out .= (depth <= keepDepth || c == "`n" || c == "`r" || c == " " || c == "`t") ? c : " "
+            i++
+        }
+    }
+    return out
+}
+
+; True when the source consists only of type/namespace declarations (a complete source file)
+WB_IsTypeOnlySource(skel) {
+    s := RegExReplace(skel, "m)^[ \t]*using[ \t]+[^;{}()\r\n]+;", "")
+    s := RegExReplace(s, "m)^[ \t]*#.*$", "")
+    s := RegExReplace(s, "(?:\[[^\]]*\]\s*)*(?:\w+\s+)*?(?:class|struct|interface|enum)\s+\w+[^{;]*\{\s*\}", "")
+    s := RegExReplace(s, "\bnamespace\s+[\w.]+\s*\{\s*\}", "")
+    return (Trim(s, " `t`r`n;") == "")
+}
+
+; class/struct declarations in a skeleton -> [{name, isPublic}]
+WB_FindTypeDecls(scan) {
+    decls := []
+    pos := 1
+    while RegExMatch(scan, "\b((?:(?:public|internal|static|sealed|abstract|partial|unsafe)\s+)*)(class|struct)\s+(\w+)", &m, pos) {
+        pos := m.Pos + m.Len
+        lastCh := SubStr(RTrim(SubStr(scan, 1, m.Pos - 1), " `t`r`n"), -1)
+        if (lastCh == ":" || lastCh == ",")
+            continue            ; generic constraint (where T : class ...), not a declaration
+        decls.Push({name: m[3], isPublic: InStr(m[1], "public") > 0})
+    }
+    return decls
+}
+
+; Name of the public static method to invoke: Run, else Main, else the first one found
+WB_FindEntryMethod(skel, className := "") {
+    start := 1
+    if (className != "" && RegExMatch(skel, "\b(?:class|struct)\s+" className "\b", &cm))
+        start := cm.Pos + cm.Len
+    names := []
+    pos := start
+    while RegExMatch(skel, "\b(?:public\s+static|static\s+public)\s+(?:(?:unsafe|async|new|extern)\s+)*[\w.<>\[\],?\s]+?\s+(\w+)\s*\(", &m, pos) {
+        names.Push(m[1])
+        pos := m.Pos + m.Len
+    }
+    for n in names {
+        if (n == "Run")
+            return n
+    }
+    for n in names {
+        if (n == "Main")
+            return n
+    }
+    return names.Length ? names[1] : "Run"
+}
+
+; Turn editor code into a compilable C# source. Returns
+;   {src, className, shortName, method, offset, wrapped}
+; * Code made only of type declarations is used as is (never nested inside a wrapper type).
+; * Otherwise the members are wrapped in `public class <className>`. Every line of the wrapper's
+;   prologue sits on ONE line and the code's own `using` lines are hoisted into it, so compiler
+;   line N is editor line N - offset (offset 1 when wrapped, 0 when not).
+WB_BuildClassSource(code, className) {
+    if !RegExMatch(className, "^[A-Za-z_]\w*$")
+        throw ValueError("Not a valid C# class name: " className)
+
+    baseUsings := "using System; using System.Linq; using System.Collections.Generic;"
+    skel0 := WB_CSharpSkeleton(code, 0)
+
+    if (WB_IsTypeOnlySource(skel0)) {
+        ns := ""
+        scan := skel0
+        if RegExMatch(skel0, "\bnamespace\s+([\w.]+)", &nm) {
+            ns := nm[1]
+            scan := WB_CSharpSkeleton(code, 1)
+        }
+        decls := WB_FindTypeDecls(scan)
+        if (decls.Length) {
+            entry := decls[1].name
+            for d in decls {
+                if (d.isPublic) {
+                    entry := d.name
+                    break
+                }
+            }
+            bodySkel := WB_CSharpSkeleton(code, (ns != "") ? 2 : 1)
+            method := WB_FindEntryMethod(bodySkel, entry)
+            pre := RegExMatch(code, "i)\busing\s+System\b") ? "" : (baseUsings " ")
+            fullName := (ns != "") ? (ns "." entry) : entry
+            return {src: pre . code, className: fullName, shortName: entry, method: method, offset: 0, wrapped: false}
+        }
+    }
+
+    ; Members only: wrap. Hoist top-level using directives into the prologue, blanking their old lines.
+    usings := baseUsings
+    stripped := ""
+    pos := 1
+    while RegExMatch(skel0, "m)^[ \t]*using[ \t]+[^;{}()\r\n]+;", &um, pos) {
+        stripped .= SubStr(code, pos, um.Pos - pos) WB_Blank(SubStr(code, um.Pos, um.Len))
+        usings .= " " Trim(SubStr(code, um.Pos, um.Len))
+        pos := um.Pos + um.Len
+    }
+    stripped .= SubStr(code, pos)
+
+    method := WB_FindEntryMethod(skel0)
+    src := usings " public class " className " {`n" stripped "`n}"
+    return {src: src, className: className, shortName: className, method: method, offset: 1, wrapped: true}
+}
+
+; Compiler messages say "Line N: ..." relative to the generated source — map them to editor lines
+WB_RemapCompilerLines(msg, offset) {
+    if (offset <= 0)
+        return msg
+    out := ""
+    pos := 1
+    while RegExMatch(msg, "i)\bLine (\d+):", &m, pos) {
+        n := Integer(m[1])
+        out .= SubStr(msg, pos, m.Pos - pos) "Line " (n > offset ? n - offset : "0 (generated header)") ":"
+        pos := m.Pos + m.Len
+    }
+    return out SubStr(msg, pos)
+}
+
+; ── AHK Script mode: run in a separate process, capture its output, clean up afterwards ──
+
+; Make relative `#Include` lines resolve: the script runs from a temp folder, so anything relative
+; to the studio's folder (lib\, ext\, <ahk#> ...) is rewritten to an absolute path. Line count is unchanged.
+WB_AbsolutizeIncludes(code) {
+    if !InStr(code, "#Include")
+        return code
+    out := ""
+    Loop Parse, code, "`n", "`r" {
+        line := A_LoopField
+        if RegExMatch(line, "i)^(\s*#Include(?:Again)?\s+)(\*i\s+)?(.*)$", &m) {
+            rest := RTrim(RegExReplace(m[3], "\s+;.*$", ""))
+            path := ""
+            libName := ""
+            if RegExMatch(rest, "^<([^>]+)>$", &lm) {
+                libName := lm[1]
+            } else if RegExMatch(rest, '^"([^"]*)"$', &qm) || RegExMatch(rest, "^'([^']*)'$", &qm) {
+                path := qm[1]
+            } else {
+                path := rest
+            }
+
+            newPath := ""
+            if (libName != "") {
+                for dirName in ["lib", "ext"] {
+                    cand := A_ScriptDir "\" dirName "\" libName ".ahk"
+                    if FileExist(cand) {
+                        newPath := cand
+                        break
+                    }
+                }
+            } else if (path != "" && !RegExMatch(path, "^([A-Za-z]:|\\\\)")) {
+                newPath := A_ScriptDir "\" StrReplace(path, "/", "\")
+                if !FileExist(newPath) {
+                    ; examples use "..\lib\ahk#.ahk" relative to their own folder
+                    alt := A_ScriptDir "\" RegExReplace(StrReplace(path, "/", "\"), "^(\.\.\\)+", "")
+                    if FileExist(alt)
+                        newPath := alt
+                }
+            }
+            if (newPath != "")
+                line := m[1] m[2] '"' newPath '"'
+        }
+        out .= line "`n"
+    }
+    return out
+}
+
+; Start `cmd` with stdout+stderr redirected to a file. Returns true on success (pid/hProc by ref).
+WB_Spawn(cmd, workDir, outFile, &pid, &hProc) {
+    pid := 0
+    hProc := 0
+
+    sa := Buffer(A_PtrSize == 8 ? 24 : 12, 0)      ; SECURITY_ATTRIBUTES, inheritable
+    NumPut("UInt", sa.Size, sa, 0)
+    NumPut("Int", 1, sa, A_PtrSize == 8 ? 16 : 8)
+
+    hOut := DllCall("CreateFileW", "wstr", outFile, "uint", 0x40000000, "uint", 3, "ptr", sa
+        , "uint", 2, "uint", 0x80, "ptr", 0, "ptr")          ; GENERIC_WRITE, share R|W, CREATE_ALWAYS
+    if (hOut == -1 || !hOut)
+        return false
+    hIn := DllCall("CreateFileW", "wstr", "NUL", "uint", 0x80000000, "uint", 3, "ptr", sa
+        , "uint", 3, "uint", 0x80, "ptr", 0, "ptr")          ; stdin = NUL
+    if (hIn == -1)
+        hIn := 0
+
+    si := Buffer(A_PtrSize == 8 ? 104 : 68, 0)               ; STARTUPINFOW
+    NumPut("UInt", si.Size, si, 0)
+    NumPut("UInt", 0x100, si, A_PtrSize == 8 ? 60 : 44)      ; STARTF_USESTDHANDLES
+    NumPut("Ptr", hIn, si, A_PtrSize == 8 ? 80 : 56)
+    NumPut("Ptr", hOut, si, A_PtrSize == 8 ? 88 : 60)
+    NumPut("Ptr", hOut, si, A_PtrSize == 8 ? 96 : 64)
+
+    pi := Buffer(A_PtrSize == 8 ? 24 : 16, 0)                ; PROCESS_INFORMATION
+    cmdBuf := Buffer((StrLen(cmd) + 1) * 2, 0)               ; CreateProcessW may modify its command line
+    StrPut(cmd, cmdBuf)
+    ok := DllCall("CreateProcessW", "ptr", 0, "ptr", cmdBuf, "ptr", 0, "ptr", 0, "int", true
+        , "uint", 0, "ptr", 0, "wstr", workDir, "ptr", si, "ptr", pi)
+
+    DllCall("CloseHandle", "ptr", hOut)
+    if (hIn)
+        DllCall("CloseHandle", "ptr", hIn)
+    if (!ok)
+        return false
+
+    hProc := NumGet(pi, 0, "Ptr")
+    DllCall("CloseHandle", "ptr", NumGet(pi, A_PtrSize, "Ptr"))
+    pid := NumGet(pi, 2 * A_PtrSize, "UInt")
+    return true
+}
+
+; Write the code to a unique temp folder and run it with /ErrorStdOut.
+;   user.ahk  — the editor text, byte for byte (so error line numbers match the editor)
+;   main.ahk  — #Requires + the AHK# includes + #Include user.ahk
+WB_StartAhkScript(code) {
+    global g_runs
+    dir := A_Temp "\ahksharp_wb_" A_TickCount
+    while DirExist(dir)
+        dir .= "_"
+    DirCreate(dir)
+
+    userFile := dir "\user.ahk"
+    mainFile := dir "\main.ahk"
+    outFile := dir "\out.txt"
+    try {
+        FileAppend(WB_AbsolutizeIncludes(code), userFile, "UTF-8")
+        hdr := "#Requires AutoHotkey v2.0`n#SingleInstance Force`n"
+        hdr .= '#Include "' A_ScriptDir '\lib\ahk#.ahk"`n'
+        hdr .= '#Include "' A_ScriptDir '\ext\ahk#.http.ahk"`n'
+        hdr .= '#Include "' userFile '"`n'
+        FileAppend(hdr, mainFile, "UTF-8")
+    } catch as e {
+        WB_DeleteDirLater(dir, 1)
+        throw e
+    }
+
+    cmd := '"' A_AhkPath '" /ErrorStdOut "' mainFile '"'
+    job := {pid: 0, hProc: 0, dir: dir, outFile: outFile, f: 0, started: A_TickCount, captured: false}
+    pid := 0
+    hProc := 0
+    if WB_Spawn(cmd, A_ScriptDir, outFile, &pid, &hProc) {
+        job.captured := true
+        job.pid := pid
+        job.hProc := hProc
+        try job.f := FileOpen(outFile, "r", "UTF-8-RAW")
+    } else {
+        Run(cmd, A_ScriptDir, , &pid)       ; fallback: no output capture
+        job.pid := pid
+    }
+
+    g_runs.Push(job)
+    SetTimer(WB_PollRuns, 150)
+    return job
+}
+
+WB_DrainRunOutput(r) {
+    if (!r.f)
+        return
+    try {
+        if (r.f.Pos < r.f.Length) {
+            chunk := r.f.Read()
+            if (chunk != "")
+                WB_OutAppend(edOutput, chunk)
         }
     }
 }
 
+WB_PollRuns() {
+    global g_runs
+    i := g_runs.Length
+    while (i >= 1) {
+        r := g_runs[i]
+        WB_DrainRunOutput(r)
+        if (r.hProc)
+            alive := (DllCall("WaitForSingleObject", "ptr", r.hProc, "uint", 0, "uint") == 0x102)
+        else
+            alive := ProcessExist(r.pid)
+        if (!alive) {
+            WB_DrainRunOutput(r)
+            exitText := ""
+            if (r.hProc) {
+                exitCode := 0
+                DllCall("GetExitCodeProcess", "ptr", r.hProc, "uint*", &exitCode)
+                exitText := "  exit code " exitCode
+            }
+            AppendOutput("═══ Script exited (PID " r.pid ")" exitText " ═══  [" Round((A_TickCount - r.started) / 1000, 1) "s]")
+            WB_FinalizeRun(r)
+            g_runs.RemoveAt(i)
+        }
+        i--
+    }
+    if (g_runs.Length == 0) {
+        SetTimer(WB_PollRuns, 0)
+        lblRunStatus.Value := "Script finished"
+    } else {
+        lblRunStatus.Value := g_runs.Length " script(s) running"
+    }
+}
+
+; Release handles and delete the temp folder (retried: the child may still hold out.txt for a moment)
+WB_FinalizeRun(r) {
+    try r.f.Close()
+    r.f := 0
+    if (r.hProc)
+        DllCall("CloseHandle", "ptr", r.hProc)
+    r.hProc := 0
+    WB_DeleteDirLater(r.dir, 4)
+}
+
+WB_DeleteDirLater(dir, tries := 3) {
+    try {
+        if DirExist(dir)
+            DirDelete(dir, true)
+    } catch {
+        if (tries > 1)
+            SetTimer(WB_DeleteDirLater.Bind(dir, tries - 1), -2000)
+    }
+}
+
+WB_KillRun(r) {
+    if (r.hProc)
+        DllCall("TerminateProcess", "ptr", r.hProc, "uint", 1)
+    else if (r.pid)
+        try ProcessClose(r.pid)
+}
+
+OnStopScripts(*) {
+    global g_runs
+    if (g_runs.Length == 0) {
+        SetStatus("No script is running")
+        return
+    }
+    count := g_runs.Length
+    for r in g_runs
+        WB_KillRun(r)
+    AppendOutput("■ Stop requested for " count " script(s)")
+}
+
+; ── Output pane ───────────────────────────────────────────────────────────────
+
 AppendOutput(text) {
     ts := FormatTime(, "HH:mm:ss")
-    existing := edOutput.Value
-    if (existing != "")
-        edOutput.Value := existing "`r`n[" ts "] " text
-    else
-        edOutput.Value := "[" ts "] " text
-    ; Scroll to bottom
-    SendMessage(0x00B6, 0, -1, edOutput)  ; EM_LINESCROLL
+    WB_OutAppend(edOutput, "[" ts "] " text "`r`n")
+}
+
+; Append at the end of an Edit control without touching the rest of its text, then scroll to the end.
+; Line breaks are normalised to CRLF (a lone LF shows up as a box in an Edit control).
+WB_OutAppend(ctrl, text) {
+    static EM_SETSEL := 0x00B1
+    static EM_REPLACESEL := 0x00C2
+    static EM_SCROLLCARET := 0x00B7
+    static EM_SETREADONLY := 0x00CF
+    static WM_GETTEXTLENGTH := 0x000E
+    static WM_VSCROLL := 0x0115
+    static MAXCHARS := 400000
+
+    hwnd := ctrl.Hwnd
+    text := RegExReplace(text, "\r\n|\r|\n", "`r`n")
+    len := SendMessage(WM_GETTEXTLENGTH, 0, 0, hwnd)
+
+    SendMessage(EM_SETREADONLY, 0, 0, hwnd)     ; EM_REPLACESEL is refused by read-only edits on some systems
+    if (len > MAXCHARS) {                       ; keep the pane bounded: drop the oldest half
+        SendMessage(EM_SETSEL, 0, len - MAXCHARS // 2, hwnd)
+        DllCall("SendMessageW", "ptr", hwnd, "uint", EM_REPLACESEL, "ptr", 0, "wstr", "[… older output trimmed …]`r`n", "ptr")
+        len := SendMessage(WM_GETTEXTLENGTH, 0, 0, hwnd)
+    }
+    SendMessage(EM_SETSEL, len, len, hwnd)
+    DllCall("SendMessageW", "ptr", hwnd, "uint", EM_REPLACESEL, "ptr", 0, "wstr", text, "ptr")
+    SendMessage(EM_SCROLLCARET, 0, 0, hwnd)
+    SendMessage(WM_VSCROLL, 7, 0, hwnd)         ; SB_BOTTOM
+    SendMessage(EM_SETREADONLY, 1, 0, hwnd)
+}
+
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; SETTINGS, RUN HISTORY, USER SNIPPETS  (%AppData%\AHKSharp\workbench.ini)
+; ═══════════════════════════════════════════════════════════════════════════════
+
+; The ini is created as UTF-16 so code containing any character survives IniWrite/IniRead
+WB_IniPath() {
+    static path := ""
+    if (path != "")
+        return path
+    dir := A_AppData "\AHKSharp"
+    try DirCreate(dir)
+    p := dir "\workbench.ini"
+    try {
+        if !FileExist(p)
+            FileAppend("; AHK# Developer Studio settings`r`n", p, "UTF-16")
+    }
+    path := p
+    return path
+}
+
+; Values are stored as  ~mode|time|text~  — the ~ guards against the ini API trimming spaces or quotes,
+; and line breaks are escaped so a whole script fits on one ini line.
+WB_EncodeText(s) {
+    s := StrReplace(s, "`r`n", "`n")
+    s := StrReplace(s, "%", "%25")
+    s := StrReplace(s, "`n", "%0A")
+    return s
+}
+
+WB_DecodeText(s) {
+    s := StrReplace(s, "%0A", "`r`n")
+    s := StrReplace(s, "%25", "%")
+    return s
+}
+
+WB_PackEntry(e) {
+    return "~" e.mode "|" e.time "|" WB_EncodeText(e.code) "~"
+}
+
+WB_UnpackEntry(raw) {
+    if (StrLen(raw) < 4 || SubStr(raw, 1, 1) != "~" || SubStr(raw, -1) != "~")
+        return ""
+    body := SubStr(raw, 2, StrLen(raw) - 2)
+    p1 := InStr(body, "|")
+    p2 := InStr(body, "|", , p1 + 1)
+    if (!p1 || !p2)
+        return ""
+    return {mode: SubStr(body, 1, p1 - 1), time: SubStr(body, p1 + 1, p2 - p1 - 1), code: WB_DecodeText(SubStr(body, p2 + 1))}
+}
+
+WB_HistoryLoad() {
+    list := []
+    n := 0
+    try n := Integer(IniRead(WB_IniPath(), "History", "Count", 0))
+    Loop n {
+        raw := ""
+        try raw := IniRead(WB_IniPath(), "History", "E" A_Index, "")
+        e := WB_UnpackEntry(raw)
+        if IsObject(e)
+            list.Push(e)
+    }
+    return list
+}
+
+WB_HistoryPush(mode, code) {
+    global g_historyMax
+    if (StrLen(code) > 8000)        ; ini values are limited to ~32K characters
+        return
+    code := StrReplace(code, "`r`n", "`n")
+    try {
+        list := WB_HistoryLoad()
+        for i, e in list {
+            if (e.mode == mode && StrReplace(e.code, "`r`n", "`n") == code) {
+                list.RemoveAt(i)
+                break
+            }
+        }
+        list.InsertAt(1, {mode: mode, time: A_Now, code: code})
+        while (list.Length > g_historyMax)
+            list.Pop()
+
+        ini := WB_IniPath()
+        try IniDelete(ini, "History")
+        IniWrite(list.Length, ini, "History", "Count")
+        for i, e in list
+            IniWrite(WB_PackEntry(e), ini, "History", "E" i)
+    }
+}
+
+OnHistoryClick(*) {
+    list := WB_HistoryLoad()
+    if (list.Length == 0) {
+        SetStatus("No run history yet — press Run first")
+        return
+    }
+    m := Menu()
+    for i, e in list {
+        first := ""
+        Loop Parse, e.code, "`n", "`r" {
+            if (Trim(A_LoopField) != "") {
+                first := Trim(A_LoopField)
+                break
+            }
+        }
+        if (StrLen(first) > 60)
+            first := SubStr(first, 1, 57) "..."
+        first := StrReplace(first, "&", "&&")
+        label := i ". " FormatTime(e.time, "MM-dd HH:mm") "  [" e.mode "]  " first
+        m.Add(label, WB_HistoryPick.Bind(e))
+    }
+    m.Show()
+}
+
+WB_HistoryPick(e, *) {
+    edCode.Value := e.code
+    try ddlMode.Choose(e.mode)
+    SetStatus("Loaded run from history (" e.mode ")")
+}
+
+WB_LoadUserSnippets() {
+    global snippetCode, g_userSnipHeader
+    sect := ""
+    try sect := IniRead(WB_IniPath(), "Snippets")
+    names := []
+    Loop Parse, sect, "`n", "`r" {
+        p := InStr(A_LoopField, "=")
+        if (p < 2)
+            continue
+        name := SubStr(A_LoopField, 1, p - 1)
+        e := WB_UnpackEntry(SubStr(A_LoopField, p + 1))
+        if !IsObject(e)
+            continue
+        snippetCode["★ " name] := {mode: e.mode, code: e.code}
+        names.Push("★ " name)
+    }
+    if (names.Length) {
+        ddlSnippet.Add(["── My Snippets ──"])
+        ddlSnippet.Add(names)
+        g_userSnipHeader := true
+    }
+}
+
+OnSaveSnippet(*) {
+    global snippetCode, g_userSnipHeader
+    code := edCode.Value
+    if (Trim(code) == "") {
+        SetStatus("Nothing to save — the code editor is empty")
+        return
+    }
+    if (StrLen(code) > 8000) {
+        SetStatus("Snippet too large to save (8000 character limit)")
+        return
+    }
+    ib := InputBox("Name for this snippet:", "Save Snippet", "w340 h130")
+    if (ib.Result != "OK")
+        return
+    name := Trim(RegExReplace(ib.Value, "[=\[\];\r\n]", " "))
+    if (name == "")
+        return
+
+    mode := ddlMode.Text
+    try {
+        IniWrite(WB_PackEntry({mode: mode, time: A_Now, code: code}), WB_IniPath(), "Snippets", name)
+    } catch as e {
+        SetStatus("Could not save snippet: " e.Message)
+        return
+    }
+
+    key := "★ " name
+    isNew := !snippetCode.Has(key)
+    snippetCode[key] := {mode: mode, code: code}
+    if (isNew) {
+        if (!g_userSnipHeader) {
+            ddlSnippet.Add(["── My Snippets ──"])
+            g_userSnipHeader := true
+        }
+        ddlSnippet.Add([key])
+    }
+    try ddlSnippet.Choose(key)
+    SetStatus("Saved snippet: " name)
+}
+
+WB_LoadSettings() {
+    ini := WB_IniPath()
+    try {
+        m := Integer(IniRead(ini, "Scratchpad", "Mode", MODE_EXPR))
+        if (m >= 1 && m <= 3)
+            ddlMode.Choose(m)
+    }
+    try {
+        v := IniRead(ini, "Scratchpad", "CSVersion", "")
+        if (v != "")
+            ddlScratchVer.Choose(v)
+    }
+    try {
+        v := IniRead(ini, "Precompiler", "CSVersion", "")
+        if (v != "")
+            ddlCSVer.Choose(v)
+    }
+}
+
+WB_SaveSettings() {
+    ini := WB_IniPath()
+    try IniWrite(ddlMode.Value, ini, "Scratchpad", "Mode")
+    try IniWrite(ddlScratchVer.Text, ini, "Scratchpad", "CSVersion")
+    try IniWrite(ddlCSVer.Text, ini, "Precompiler", "CSVersion")
+    try {
+        if IsObject(g_lastSize) {
+            IniWrite(Round(g_lastSize[1] * 96 / A_ScreenDPI), ini, "Window", "Width")
+            IniWrite(Round(g_lastSize[2] * 96 / A_ScreenDPI), ini, "Window", "Height")
+        }
+    }
+}
+
+WB_OnClose(*) {
+    global g_runs
+    if (g_runs.Length) {
+        r := MsgBox(g_runs.Length " script(s) started from the workbench are still running.`n`n"
+            . "Yes = stop them and exit`nNo = exit and leave them running`nCancel = keep the workbench open"
+            , "AHK# Developer Studio", "YesNoCancel Icon?")
+        if (r == "Cancel")
+            return true             ; a true return value cancels the close
+        if (r == "Yes") {
+            for job in g_runs
+                WB_KillRun(job)
+            Sleep(250)
+            for job in g_runs
+                WB_FinalizeRun(job)
+        }
+    }
+    WB_SaveSettings()
+    ExitApp()
+}
+
+; ═══════════════════════════════════════════════════════════════════════════════
+; EXPORT — scratchpad C# Class code as a ready-to-#Include CSModule .ahk
+; ═══════════════════════════════════════════════════════════════════════════════
+
+; Escape one line of text for use inside an AHK v2 double-quoted string literal
+WB_AhkQuote(s) {
+    s := StrReplace(s, "``", "````")
+    s := StrReplace(s, '"', '``"')
+    return s
+}
+
+OnExportModule(*) {
+    code := edCode.Value
+    if (Trim(code) == "") {
+        SetStatus("Nothing to export — the code editor is empty")
+        return
+    }
+    if (ddlMode.Text != "C# Class") {
+        SetStatus("Export as CSModule works on C# Class code — switch Mode to C# Class")
+        return
+    }
+
+    ib := InputBox("Class name for the exported CSModule:", "Export as CSModule .ahk", "w340 h130", "MyModule")
+    if (ib.Result != "OK")
+        return
+    modName := Trim(ib.Value)
+
+    try {
+        info := WB_BuildClassSource(code, modName)
+    } catch as e {
+        SetStatus("Cannot export: " e.Message)
+        return
+    }
+    ; When the code already declares its own class, the AHK class must carry that name
+    if (!info.wrapped)
+        modName := info.shortName
+
+    d := WB_ParseDirectives(code)
+    parts := []
+    for pkg in d.nuget
+        parts.Push('CS.NuGet.Require("' WB_AhkQuote(pkg.id) '", "' WB_AhkQuote(pkg.ver) '")')
+    if (d.refs.Length)
+        parts.Push('"' WB_AhkQuote(WB_ResolveRefs(d.refs)) '"')
+    refsExpr := ""
+    for i, part in parts {
+        if (i > 1)
+            refsExpr .= ' ";" '
+        refsExpr .= part
+    }
+    csVer := WB_VersionValue(ddlScratchVer.Text)
+
+    out := "; CSModule exported from AHK# Developer Studio  (" FormatTime(, "yyyy-MM-dd HH:mm") ")`n"
+    out .= "; ahk#.ahk must be reachable through #Include <ahk#>  (e.g. a Lib folder next to this script).`n"
+    out .= "#Requires AutoHotkey v2.0`n"
+    out .= "#Include <ahk#>`n`n"
+    out .= "class " modName " extends _CSModule {`n"
+    if (refsExpr != "")
+        out .= "    static References := " refsExpr "`n"
+    if (csVer != "")
+        out .= '    static CSVersion := "' csVer '"`n'
+    out .= '    static CSharp := ""`n'
+    Loop Parse, code, "`n", "`r"
+        out .= '        . "' WB_AhkQuote(A_LoopField) '``n"`n'
+    out .= "}`n`n"
+    out .= "; Usage:  MsgBox(String(" modName "." info.method "()))`n"
+
+    path := FileSelect("S16", A_Desktop "\" modName ".ahk", "Export CSModule", "AHK Scripts (*.ahk)")
+    if (path == "")
+        return
+    try {
+        if FileExist(path)
+            FileDelete(path)
+        FileAppend(out, path, "UTF-8")
+        SetStatus("Exported CSModule to " path)
+        AppendOutput("✓ Exported CSModule '" modName "' to " path)
+    } catch as e {
+        SetStatus("Export failed: " e.Message)
+    }
 }
 
 OnExploreType(*) {
@@ -1112,6 +2032,13 @@ OnTypesDoubleClick(ctrl, info) {
     }
 }
 
+; AHK# expression for a type: nested and generic types cannot be written as a dotted CS.A.B path
+WB_TypeRef(fullName) {
+    if (InStr(fullName, "+") || InStr(fullName, "``"))
+        return 'CS("' StrReplace(fullName, "``", "````") '")'
+    return "CS." fullName
+}
+
 OnGenSnippet(*) {
     row := lvTypes.GetNext(0, "Focused")
     if (!row) {
@@ -1120,22 +2047,23 @@ OnGenSnippet(*) {
     }
     memberType := lvTypes.GetText(row, 1)
     memberName := lvTypes.GetText(row, 2)
+    memberSig := lvTypes.GetText(row, 3)
     typeName := g_currentTypeSearch
 
     if (memberType == "Class" || memberType == "Interface" || memberType == "Struct" || memberType == "Enum" || memberType == "Delegate") {
-        fullName := lvTypes.GetText(row, 3)
-        if (memberType == "Enum") {
-            edSnippet.Value := "value := CS." StrReplace(fullName, "+", ".") "."
-        } else {
-            edSnippet.Value := "obj := CS." StrReplace(fullName, "+", ".") "()"
-        }
-        SetStatus("Snippet generated for Type: " fullName)
+        ref := WB_TypeRef(memberSig)
+        if (memberType == "Enum")
+            edSnippet.Value := "; Enum " memberSig "`r`nvalue := " ref ".MemberName"
+        else
+            edSnippet.Value := "obj := " ref "()"
+        SetStatus("Snippet generated for Type: " memberSig)
         return
     }
 
     try {
-        snippet := WBHelper.GenerateSnippet(typeName, memberName, memberType)
-        edSnippet.Value := snippet
+        ; The signature column identifies the exact overload the user selected
+        snippet := WBHelper.GenerateSnippet(typeName, memberName, memberType, memberSig)
+        edSnippet.Value := RegExReplace(snippet, "\r?\n", "`r`n")
         SetStatus("Snippet generated for " memberType ": " memberName)
     } catch as e {
         edSnippet.Value := "; Error generating snippet: " e.Message
@@ -1148,8 +2076,8 @@ OnSendToWrapper(*) {
         return
     }
 
-    ; Visually switch to Wrapper Gen Tab (Tab 10)
-    OnTabClick(customTabs[10])
+    ; Visually switch to the Wrapper Gen tab
+    OnTabClick(customTabs[TAB_WRAPPER])
 
     ; Load the assembly types
     edWrapAsm.Value := g_CurrentExploredAssembly
@@ -1175,21 +2103,41 @@ OnSendToWrapper(*) {
 }
 
 OnNuGetSearch(*) {
+    global g_nugetReqId
     query := Trim(edNuGetSearch.Value)
     if (query == "") {
         SetStatus("Enter a package name to search")
         return
     }
 
+    g_nugetReqId++
+    reqId := g_nugetReqId
     lblNuGetStatus.Value := "Searching..."
     lvNuGetResults.Delete()
     SetStatus("Searching NuGet for: " query)
 
-    ; Use async to avoid blocking UI
-    WBHelper.Async.SearchNuGet(query).Then(OnNuGetResults)
+    ; Async keeps the UI responsive; each callback carries its request id so a slow, older
+    ; search can never overwrite the results of a newer one.
+    try {
+        p := WBHelper.Async.SearchNuGet(query)
+        p.Then(OnNuGetResults.Bind(reqId))
+        p.Catch(OnNuGetFailed.Bind(reqId))
+    } catch as e {
+        lblNuGetStatus.Value := "Error!"
+        SetStatus("NuGet search could not start: " e.Message)
+    }
 }
 
-OnNuGetResults(result) {
+OnNuGetFailed(reqId, err) {
+    if (reqId != g_nugetReqId)
+        return
+    lblNuGetStatus.Value := "Error!"
+    SetStatus("NuGet search failed: " (IsObject(err) ? err.Message : err))
+}
+
+OnNuGetResults(reqId, result) {
+    if (reqId != g_nugetReqId)
+        return
     if (SubStr(result, 1, 6) == "ERROR:") {
         lblNuGetStatus.Value := "Error!"
         SetStatus("NuGet error: " SubStr(result, 7))
@@ -1233,14 +2181,18 @@ OnNuGetInstall(*) {
 
     lblInstallStatus.Value := "Installing " pkgName " " pkgVer "..."
     SetStatus("Installing " pkgName " " pkgVer "...")
+    WB_Repaint()
 
     try {
         CS.NuGet.Install(pkgName, pkgVer)
+        ; Never trust the call alone: report what is really on disk
+        if (!CS.NuGet.IsInstalled(pkgName, pkgVer))
+            throw Error("the package files were not found after the install")
         lblInstallStatus.Value := "✓ Installed " pkgName " " pkgVer
         SetStatus("Successfully installed " pkgName " " pkgVer)
         OnRefreshInstalled()
     } catch as e {
-        lblInstallStatus.Value := "✗ Error: " SubStr(e.Message, 1, 80)
+        lblInstallStatus.Value := "✗ Install failed: " SubStr(e.Message, 1, 80)
         SetStatus("Install error: " e.Message)
     }
 }
@@ -1287,8 +2239,8 @@ OnNuGetSendToWrapper(*) {
         ; Set Wrapper Gen DLL path
         edWrapAsm.Value := firstDll
 
-        ; Visually switch to Wrapper Gen Tab (Tab 10)
-        OnTabClick(customTabs[10])
+        ; Visually switch to the Wrapper Gen tab
+        OnTabClick(customTabs[TAB_WRAPPER])
 
         ; Load types
         OnWrapLoad()
@@ -1305,25 +2257,7 @@ OnNuGetRemove(*) {
         SetStatus("Please select an installed package first!")
         return
     }
-
-    pkgName := lvInstalled.GetText(row, 1)
-    pkgVer := lvInstalled.GetText(row, 2)
-
-    if (MsgBox("Are you sure you want to uninstall " pkgName " (version " pkgVer ")?", "Confirm Uninstall", "YesNo Icon! Default2") != "Yes") {
-        return
-    }
-
-    try {
-        result := CS.NuGet.Uninstall(pkgName, pkgVer)
-        if (result) {
-            SetStatus("Successfully uninstalled " pkgName " (" pkgVer ")")
-            OnRefreshInstalled()
-        } else {
-            SetStatus("Failed to uninstall " pkgName)
-        }
-    } catch as e {
-        SetStatus("Error uninstalling package: " e.Message)
-    }
+    UninstallPackage(lvInstalled.GetText(row, 1), lvInstalled.GetText(row, 2))
 }
 
 OnNuGetInstalledContextMenu(ctrl, itemIndex, isRightClick, x, y) {
@@ -1334,15 +2268,15 @@ OnNuGetInstalledContextMenu(ctrl, itemIndex, isRightClick, x, y) {
     pkgVer := lvInstalled.GetText(itemIndex, 2)
     
     InstalledPkgMenu := Menu()
-    InstalledPkgMenu.Add("Uninstall " pkgName " (" pkgVer ")", (*) => UninstallPackageDirect(pkgName, pkgVer))
+    InstalledPkgMenu.Add("Uninstall " pkgName " (" pkgVer ")", (*) => UninstallPackage(pkgName, pkgVer))
     InstalledPkgMenu.Add("Send to Wrapper Gen", (*) => (lvInstalled.Modify(itemIndex, "Select Focus"), OnNuGetSendToWrapper()))
     InstalledPkgMenu.Show()
 }
 
-UninstallPackageDirect(pkgName, pkgVer) {
-    if (MsgBox("Are you sure you want to uninstall " pkgName " (version " pkgVer ")?", "Confirm Uninstall", "YesNo Icon! Default2") != "Yes") {
+; The one and only uninstall path (button and context menu both end up here)
+UninstallPackage(pkgName, pkgVer) {
+    if (MsgBox("Are you sure you want to uninstall " pkgName " (version " pkgVer ")?", "Confirm Uninstall", "YesNo Icon! Default2") != "Yes")
         return
-    }
 
     try {
         result := CS.NuGet.Uninstall(pkgName, pkgVer)
@@ -1389,52 +2323,59 @@ OnSendPrecompSnippetToScratch(*) {
     }
 
     edCode.Value := snippet
-    ddlMode.Choose(3)  ; AHK Script mode
-    OnTabClick(customTabs[2])  ; Switch to Scratchpad Tab (index 2)
+    ddlMode.Choose(MODE_AHK)
+    OnTabClick(customTabs[TAB_SCRATCH])
     SetStatus("Sent compiled test script to Scratchpad!")
 }
 
 OnPrecompile(*) {
     global g_precompAsmId
     code := edPrecompCode.Value
-    className := edClassName.Value
-    refs := edPrecompRefs.Value
-    csVer := ddlCSVer.Text
+    className := Trim(edClassName.Value)
+    refs := Trim(edPrecompRefs.Value)
+    csVer := WB_VersionValue(ddlCSVer.Text)
 
-    if (code == "" || className == "") {
+    if (Trim(code) == "" || className == "") {
         edPrecompOut.Value := "⚠ Enter a class name and C# code first."
         return
     }
 
     edPrecompOut.Value := "Compiling..."
+    WB_Repaint()
     startTick := A_TickCount
-
-    ; Build full source
-    fullCode := "using System; using System.Linq; using System.Collections.Generic;"
-        . " public class " className " { " code " }"
+    offset := 0
 
     try {
+        ; Same wrapping as the scratchpad: members are wrapped, complete classes are used as they are
+        refs := WB_JoinRefs(refs, WB_CollectRefs(code))
+        info := WB_BuildClassSource(code, className)
+        offset := info.offset
+        cls := info.className
+
         bridge := _AhkSharpEngine.Boot()
-        if (csVer != "4.0 (default)")
-            g_precompAsmId := bridge.CompileModuleVersioned(fullCode, refs, csVer)
+        if (csVer != "")
+            g_precompAsmId := bridge.CompileModuleVersioned(info.src, refs, csVer)
         else
-            g_precompAsmId := bridge.CompileModule(fullCode, refs)
+            g_precompAsmId := bridge.CompileModule(info.src, refs)
 
         elapsed := A_TickCount - startTick
-        edPrecompOut.Value := "✓ Compilation successful!  [" elapsed "ms]"
-            . "`r`n  Assembly ID: " g_precompAsmId
-            . "`r`n  Class: " className
-            . "`r`n  C# Version: " csVer
-            . "`r`n`r`n  You can now Export DLL or test in AHK Script with:"
-            . "`r`n  bridge := _AhkSharpEngine.Boot()"
-            . '`r`n  result := bridge.InvokeModule("' g_precompAsmId '", "' className '", "Run", "")'
-            . '`r`n  MsgBox(String(result))'
+        out := "✓ Compilation successful!  [" elapsed "ms]"
+        out .= "`r`n  Assembly ID: " g_precompAsmId
+        clsNote := info.wrapped ? "" : "  (declared in your code)"
+        verLabel := (csVer != "") ? csVer : "4.0 (default)"
+        out .= "`r`n  Class: " cls clsNote
+        out .= "`r`n  C# Version: " verLabel
+        out .= "`r`n`r`n  You can now Export DLL or test in AHK Script with:"
+        out .= "`r`n  bridge := _AhkSharpEngine.Boot()"
+        out .= '`r`n  result := bridge.InvokeModule("' g_precompAsmId '", "' cls '", "' info.method '", "")'
+        out .= '`r`n  MsgBox(String(result))'
+        edPrecompOut.Value := out
 
-        ; Try running if Run() exists
+        ; Try the entry method (Run / Main / first public static)
         try {
-            testResult := bridge.InvokeModule(g_precompAsmId, className, "Run", "")
+            testResult := bridge.InvokeModule(g_precompAsmId, cls, info.method, "")
             edPrecompOut.Value := edPrecompOut.Value
-                . "`r`n`r`n═══ Test Run Output ═══"
+                . "`r`n`r`n═══ Test Run Output (" info.method ") ═══"
                 . "`r`n" (IsObject(testResult) ? String(testResult) : testResult)
         }
 
@@ -1443,7 +2384,7 @@ OnPrecompile(*) {
         elapsed := A_TickCount - startTick
         g_precompAsmId := ""
         edPrecompOut.Value := "✗ Compilation FAILED  [" elapsed "ms]"
-            . "`r`n`r`n" e.Message
+            . "`r`n`r`n" WB_RemapCompilerLines(e.Message, offset)
         SetStatus("Compilation failed")
     }
 }
@@ -1520,9 +2461,12 @@ OnCacheDelete(*) {
         return
 
     try {
-        WBHelper.DeleteCacheEntry(hash)
-        OnCacheRefresh()
-        SetStatus("Deleted cache entry: " hash)
+        if (WBHelper.DeleteCacheEntry(hash)) {
+            OnCacheRefresh()
+            SetStatus("Deleted cache entry: " hash)
+        } else {
+            SetStatus("Could not delete " hash " — the DLL is in use by this process")
+        }
     } catch as e {
         SetStatus("Delete error: " e.Message)
     }
@@ -1551,6 +2495,29 @@ OnCacheClearAll(*) {
     }
 }
 
+OnCacheCleanUnused(*) {
+    count := 0
+    try count := WBHelper.CountUnusedCache()
+    if (!count) {
+        SetStatus("Nothing to clean — every cached module is loaded in this session")
+        return
+    }
+
+    result := MsgBox("Delete " count " cached module(s) that are not loaded in this session?`n`n"
+        . "They are recompiled the next time they are needed.",
+        "Clean Unused Cache", "YesNo Icon!")
+    if (result != "Yes")
+        return
+
+    try {
+        deleted := WBHelper.CleanUnusedCache()
+        OnCacheRefresh()
+        SetStatus("Removed " deleted " unused cache file(s)")
+    } catch as e {
+        SetStatus("Clean error: " e.Message)
+    }
+}
+
 OnForceGC(*) {
     SetStatus("Forcing garbage collection...")
     beforeInfo := WBHelper.GetMemoryInfo()
@@ -1565,12 +2532,8 @@ OnForceGC(*) {
 
     UpdateCLRDisplay(afterInfo)
 
-    ; Clean unused cache files from disk
-    cleanedCount := 0
-    try {
-        cleanedCount := WBHelper.CleanUnusedCache()
-    }
-
+    ; Force GC only collects memory. It never touches the compile cache on disk —
+    ; use the Cache tab (Clean Unused / Clear ALL Cache) for that.
     try {
         freed := Integer(beforeBytes) - Integer(afterBytes)
         statusMsg := "GC complete"
@@ -1581,9 +2544,6 @@ OnForceGC(*) {
             statusMsg .= " — freed " freedStr
         } else {
             statusMsg .= " — no significant memory freed"
-        }
-        if (cleanedCount > 0) {
-            statusMsg .= " — cleaned " cleanedCount " old cache files"
         }
         SetStatus(statusMsg)
     } catch {
@@ -1630,8 +2590,8 @@ OnClrSendToWrapper(*) {
     ; Set Wrapper Gen DLL path
     edWrapAsm.Value := targetAsm
 
-    ; Visually switch to Wrapper Gen Tab (Tab 10)
-    OnTabClick(customTabs[10])
+    ; Visually switch to the Wrapper Gen tab
+    OnTabClick(customTabs[TAB_WRAPPER])
 
     ; Load types
     OnWrapLoad()
@@ -1640,6 +2600,8 @@ OnClrSendToWrapper(*) {
 }
 
 UpdateCLRDisplay(memInfo) {
+    ; Display only: refreshing (or the 2s auto-refresh) must never change what it measures,
+    ; so no GC is triggered here — the "Force GC" button is the only thing that collects.
     parts := StrSplit(memInfo, "|")
     if (parts.Length >= 6) {
         lblHeapSize.Value := parts[1]
@@ -1647,28 +2609,7 @@ UpdateCLRDisplay(memInfo) {
         lblGen1.Value := parts[3]
         lblGen2.Value := parts[4]
         lblAsmCount.Value := parts[5]
-        rawBytesVal := parts[6]
-        lblRawBytes.Value := rawBytesVal " bytes"
-
-        ; If managed heap exceeds 5MB, trigger an auto-GC to keep memory extremely low and clean!
-        try {
-            rawBytesNum := Integer(rawBytesVal)
-            if (rawBytesNum > 5 * 1024 * 1024) {
-                CS.GC()
-                ; Refresh memory statistics display after auto-GC
-                memInfoAfter := WBHelper.GetMemoryInfo()
-                partsAfter := StrSplit(memInfoAfter, "|")
-                if (partsAfter.Length >= 6) {
-                    lblHeapSize.Value := partsAfter[1]
-                    lblGen0.Value := partsAfter[2]
-                    lblGen1.Value := partsAfter[3]
-                    lblGen2.Value := partsAfter[4]
-                    lblAsmCount.Value := partsAfter[5]
-                    lblRawBytes.Value := partsAfter[6] " bytes"
-                    SetStatus("Auto-GC triggered (memory exceeded 5MB)")
-                }
-            }
-        }
+        lblRawBytes.Value := parts[6] " bytes"
     }
 }
 
@@ -1909,8 +2850,8 @@ BuildAhkTree(tv, parentId, name, obj, depth) {
 }
 
 OnPredictOverload(*) {
-    tName := edPredType.Value
-    mName := edPredMethod.Value
+    tName := Trim(edPredType.Value)
+    mName := Trim(edPredMethod.Value)
     argsRaw := edPredArgs.Value
 
     if (tName == "" || mName == "")
@@ -1918,20 +2859,11 @@ OnPredictOverload(*) {
 
     SetStatus("Predicting overload...")
     try {
+        ; Same literal parser as the Marshalling tab: [ "123", 16, true, [1, 2], {a: 1}, Map(...) ]
         argsObj := []
-        if (RegExMatch(argsRaw, "^\[(.*)\]$", &m)) {
-            parts := StrSplit(m[1], ",")
-            for part in parts {
-                part := Trim(part)
-                if (RegExMatch(part, '^"(.*)"$', &strMatch))
-                    argsObj.Push(strMatch[1])
-                else if (IsNumber(part))
-                    argsObj.Push(part + 0)
-                else if (part == "true" || part == "false")
-                    argsObj.Push(part == "true")
-            }
-        } else {
-            argsObj := [argsRaw] ; fallback
+        if (Trim(argsRaw) != "") {
+            parsed := ParseAhkLiteral(argsRaw)
+            argsObj := (parsed is Array) ? parsed : [parsed]
         }
 
         csArgs := ComObjArray(0xC, argsObj.Length)
@@ -1939,7 +2871,7 @@ OnPredictOverload(*) {
             csArgs[i - 1] := val
 
         result := WBHelper.PredictOverload(tName, mName, csArgs)
-        edPredResult.Value := result
+        edPredResult.Value := RegExReplace(result, "\r?\n", "`r`n")
         SetStatus("Overload prediction complete")
     } catch as e {
         edPredResult.Value := "ERROR: " e.Message
@@ -2026,6 +2958,57 @@ OnWrapLoad(*) {
     lvWrapTypes.Opt("+Redraw")
 }
 
+; A valid, unique AHK class name for a .NET type: drops the namespace, the `N generic-arity marker
+; and the '+' of nested types, and avoids AHK's built-in class names.
+WB_WrapperName(cls, used) {
+    static reserved := Map("array", 1, "map", 1, "object", 1, "string", 1, "number", 1, "integer", 1
+        , "float", 1, "buffer", 1, "error", 1, "gui", 1, "menu", 1, "file", 1, "func", 1, "class", 1
+        , "any", 1, "cs", 1, "enumerator", 1, "primitive", 1, "regexmatchinfo", 1, "inputhook", 1
+        , "comobject", 1, "closure", 1, "boundfunc", 1, "menubar", 1, "varref", 1)
+    name := RegExReplace(cls, "^.*\.", "")
+    name := RegExReplace(name, "``\d+", "")
+    name := RegExReplace(name, "\W", "_")
+    if (name == "" || RegExMatch(name, "^\d"))
+        name := "T_" name
+    if reserved.Has(StrLower(name))
+        name := "Cs" name
+    baseName := name
+    n := 2
+    while used.Has(StrLower(name)) {
+        name := baseName "_" n
+        n++
+    }
+    used[StrLower(name)] := true
+    return name
+}
+
+; Read accessors from the accessor block of a property signature ("String {get/set}" or "{ get; set; }").
+; Only whole tokens count, so names such as HashSet or Widget can never be mistaken for get/set.
+WB_PropAccess(sig, &canGet, &canSet) {
+    canGet := false
+    canSet := false
+    if RegExMatch(sig, "\{([^{}]*)\}\s*$", &m) {
+        for tok in StrSplit(m[1], [";", "/", ",", " ", "`t"], " `t") {
+            t := StrLower(tok)
+            if (t == "get")
+                canGet := true
+            else if (t == "set")
+                canSet := true
+        }
+    }
+    if (!canGet && !canSet)
+        canGet := true
+}
+
+; Assemblies that ship with .NET load by name; everything else (NuGet, custom DLLs) must be loaded by path
+WB_NeedsLoadAssembly(asmPath) {
+    if (asmPath == "" || asmPath == "Dynamic" || !FileExist(asmPath))
+        return false
+    if (InStr(asmPath, A_WinDir "\Microsoft.NET\") == 1 || InStr(asmPath, A_WinDir "\assembly\") == 1)
+        return false
+    return true
+}
+
 OnWrapGen(*) {
     SetStatus("Generating wrappers...")
     count := lvWrapTypes.GetCount()
@@ -2040,24 +3023,33 @@ OnWrapGen(*) {
         return
     }
 
+    stamp := FormatTime(, "yyyy-MM-dd HH:mm")
     out := "; Auto-Generated AHK# Wrapper for " edWrapAsm.Value "`n"
-    out .= "; Generated on " FormatTime(, "yyyy-MM-dd HH:mm") "`n`n"
+    out .= "; Generated on " stamp "`n`n"
     out .= "#Include <ahk#>`n`n"
 
     def := "/**`n * Auto-Generated AHK# IntelliSense Definition for " edWrapAsm.Value "`n"
-    def .= " * Generated on " FormatTime(, "yyyy-MM-dd HH:mm") "`n */`n`n"
+    def .= " * Generated on " stamp "`n */`n`n"
 
+    used := Map()
     for cls in selected {
-        shortName := RegExReplace(cls, ".*\.", "")
+        shortName := WB_WrapperName(cls, used)
+        clsLit := StrReplace(cls, "``", "````")     ; the generic-arity backtick must be doubled inside an AHK string
+
+        ; Extract full metadata using ExploreType
+        metaStr := WBHelper.ExploreType(cls, 0)
+        if (SubStr(metaStr, 1, 6) == "ERROR:") {
+            out .= "; " cls " skipped — " metaStr "`n`n"
+            continue
+        }
 
         methods := Map()
         staticMethods := Map()
         props := Map()
         staticProps := Map()
         events := Map()
+        asmLoc := ""
 
-        ; Extract full metadata using ExploreType
-        metaStr := WBHelper.ExploreType(cls, 0)
         Loop Parse, metaStr, "`n", "`r" {
             parts := StrSplit(A_LoopField, "|")
             if (parts.Length < 3)
@@ -2066,6 +3058,10 @@ OnWrapGen(*) {
             kind := parts[1]
             name := parts[2]
             sig := parts[3]
+            if (kind == "Assembly") {
+                asmLoc := sig
+                continue
+            }
             isStatic := (parts.Length >= 4 && parts[4] == "Static")
 
             if (kind == "Method") {
@@ -2074,6 +3070,8 @@ OnWrapGen(*) {
                     mapObj[name] := []
                 mapObj[name].Push(sig)
             } else if (kind == "Property") {
+                if (name == "Item")             ; indexer: not expressible as an AHK property
+                    continue
                 mapObj := isStatic ? staticProps : props
                 mapObj[name] := sig
             } else if (kind == "Event") {
@@ -2081,43 +3079,55 @@ OnWrapGen(*) {
             }
         }
 
+        hasInstance := (methods.Count > 0 || props.Count > 0 || events.Count > 0)
+
         ; 1. Generate Runtime Wrapper
         out .= "class " shortName " {`n"
 
+        if (WB_NeedsLoadAssembly(asmLoc)) {
+            ; Not a framework assembly: it has to be loaded by path before its types can be used
+            out .= "    static __New() {`n"
+            out .= "        CS.LoadAssembly(`"" StrReplace(asmLoc, "``", "````") "`")`n"
+            out .= "    }`n`n"
+        }
+
         if (staticProps.Count > 0 || staticMethods.Count > 0) {
             for mName, sigs in staticMethods
-                out .= "    static " mName "(args*) => CS.Import(`"" cls "`")." mName "(args*)`n"
+                out .= "    static " mName "(args*) => CS(`"" clsLit "`")." mName "(args*)`n"
             for pName, sig in staticProps {
+                WB_PropAccess(sig, &canGet, &canSet)
                 out .= "    static " pName " {`n"
-                if InStr(sig, "get")
-                    out .= "        get => CS.Import(`"" cls "`")." pName "`n"
-                if InStr(sig, "set")
-                    out .= "        set => CS.Import(`"" cls "`")." pName " := value`n"
+                if (canGet)
+                    out .= "        get => CS(`"" clsLit "`")." pName "`n"
+                if (canSet)
+                    out .= "        set => CS(`"" clsLit "`")." pName " := value`n"
                 out .= "    }`n"
             }
             out .= "`n"
         }
 
-        out .= "    __New(args*) {`n"
-        out .= "        this._obj := CS(`"" cls "`")(args*)`n"
-        out .= "    }`n`n"
+        if (hasInstance) {
+            out .= "    __New(args*) {`n"
+            out .= "        this._obj := CS(`"" clsLit "`")(args*)`n"
+            out .= "    }`n`n"
+        }
 
         for mName, sigs in methods
             out .= "    " mName "(args*) => this._obj." mName "(args*)`n"
 
         for pName, sig in props {
+            WB_PropAccess(sig, &canGet, &canSet)
             out .= "    " pName " {`n"
-            if InStr(sig, "get")
+            if (canGet)
                 out .= "        get => this._obj." pName "`n"
-            if InStr(sig, "set")
+            if (canSet)
                 out .= "        set => this._obj." pName " := value`n"
             out .= "    }`n"
         }
 
         for eName, sig in events {
-            delType := sig
             out .= "    " eName "Event(callback) {`n"
-            out .= "        this._obj." eName " := CS.Delegate(callback, `"" delType "`")`n"
+            out .= "        this._obj.On(`"" eName "`", callback)`n"
             out .= "    }`n"
         }
         out .= "}`n`n"
@@ -2134,7 +3144,8 @@ OnWrapGen(*) {
             def .= "    /** @type {Any} */`n"
             def .= '    static ' pName ' {`n        get => ""`n        set => ""`n    }`n'
         }
-        def .= "    __New(args*) {}`n"
+        if (hasInstance)
+            def .= "    __New(args*) {}`n"
 
         for mName, sigs in methods {
             def .= ParseMethodJSDoc(sigs)
@@ -2145,7 +3156,7 @@ OnWrapGen(*) {
             def .= '    ' pName ' {`n        get => ""`n        set => ""`n    }`n'
         }
         for eName, sig in events {
-            def .= "    /**`n     * Binds a callback to the " eName " event.`n     * @param {Func} callback`n     */`n"
+            def .= "    /**`n     * Binds a callback to the " eName " event (the callback receives the event args).`n     * @param {Func} callback`n     */`n"
             def .= '    ' eName 'Event(callback) => ""`n'
         }
         def .= "}`n`n"
@@ -2190,8 +3201,8 @@ OnWrapTest(*) {
     code := edWrapOut.Value
     if (code == "")
         return
-    OnTabClick(customTabs[2])
-    ddlMode.Choose(3) ; AHK Script
+    OnTabClick(customTabs[TAB_SCRATCH])
+    ddlMode.Choose(MODE_AHK) ; AHK Script
 
     firstClass := "Class"
     if (g_WrapClassData.Count > 0) {

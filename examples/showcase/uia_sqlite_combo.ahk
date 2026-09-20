@@ -1,4 +1,4 @@
-﻿;; AHK# Example 11 — Power Combo: UIA + SQLite + CSModule
+﻿;; AHK# — Power Combo: UIA + SQLite + CSModule
 ;; Crawl the UI tree of any window, store it in SQLite, and query it.
 ;; Demonstrates combining multiple AHK# extensions in a real workflow.
 
@@ -17,14 +17,15 @@ class ElementStats extends _CSModule {
     (
         using System.Linq;
 
-        public static int MaxDepth(int[] depths) {
+        // AHK arrays arrive as object[], so convert each element to an int here
+        public static int MaxDepth(object[] depths) {
             if (depths == null || depths.Length == 0) return 0;
-            return depths.Max();
+            return depths.Max(d => Convert.ToInt32(d));
         }
 
-        public static double AvgDepth(int[] depths) {
+        public static double AvgDepth(object[] depths) {
             if (depths == null || depths.Length == 0) return 0;
-            return depths.Average();
+            return depths.Average(d => Convert.ToInt32(d));
         }
 
         public static double TreeComplexity(int totalNodes, int maxDepth, int typeCount) {
@@ -35,9 +36,11 @@ class ElementStats extends _CSModule {
 }
 
 ; ══════════════════════════════════════════════════════════════════════════════
-; 2. SQLite: Persistent Element Store
+; 2. SQLite: In-Memory Element Store
 ; ══════════════════════════════════════════════════════════════════════════════
 
+; ":memory:" keeps the database in RAM for this run only; pass a file path
+; (e.g. A_Temp "\ui_scan.db") instead if you want the scan to persist.
 db := SQLite(":memory:")
 
 db.Execute("CREATE TABLE ui_elements ("
@@ -103,19 +106,13 @@ scanId := db.LastId
 ; Insert all elements
 count := 0
 depths := []
-try {
-    Loop {
-        try {
-            el := elements[A_Index - 1]
-            db.Execute("INSERT INTO ui_elements (name, control_type, automation_id, class_name, depth, x, y, w, h, is_enabled, scan_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                , el.Name, el.ControlType, el.AutomationId, el.ClassName
-                , el.Depth, el.BoundingX, el.BoundingY, el.BoundingW, el.BoundingH
-                , el.IsEnabled, scanTime)
-            depths.Push(el.Depth)
-            count++
-        } catch
-            break
-    }
+for el in elements {   ; enumeration stops at the end of the array
+    db.Execute("INSERT INTO ui_elements (name, control_type, automation_id, class_name, depth, x, y, w, h, is_enabled, scan_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        , el.Name, el.ControlType, el.AutomationId, el.ClassName
+        , el.Depth, el.BoundingX, el.BoundingY, el.BoundingW, el.BoundingH
+        , el.IsEnabled, scanTime)
+    depths.Push(el.Depth)
+    count++
 }
 
 ; Update scan with real count
@@ -165,11 +162,8 @@ msg .= "`n`n─── Named Elements ───"
 
 ; C# depth analysis
 if depths.Length > 0 {
-    depthArr := ComObjArray(0x3, depths.Length)  ; VT_I4 array
-    for i, d in depths
-        depthArr[i - 1] := Integer(d)
-    csMax := ElementStats.MaxDepth(depthArr)
-    csAvg := ElementStats.AvgDepth(depthArr)
+    csMax := ElementStats.MaxDepth(depths)   ; AHK Array → object[] in C#
+    csAvg := ElementStats.AvgDepth(depths)
     msg .= "`n`n─── C# Depth Analysis ───"
         . "`n  Max depth (C#): " csMax
         . "`n  Avg depth (C#): " Format("{:.1f}", csAvg)

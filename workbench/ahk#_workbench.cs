@@ -1,6 +1,4 @@
 using System;
-using System.Windows.Forms;
-using System.Drawing;
 using System.IO;
 using System.Reflection;
 using System.Collections;
@@ -10,6 +8,9 @@ using System.Text;
 using System.Net;
 using System.Diagnostics;
 
+// NOTE: _CSModule wraps this file inside a generated WBHelper type and compiles it as C# 4/5.
+// Keep it free of nested type declarations and of C# 6+ syntax (no ?. / interpolated strings / nameof).
+
 private static readonly string _cacheDir = Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
     "AhkSharp", "CompileCache");
@@ -17,128 +18,6 @@ private static readonly string _cacheDir = Path.Combine(
 private static readonly string _pkgDir = Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
     "AhkSharp", "Packages");
-
-// ── WinForms UI Generators ───────────────────────────────────────
-public static SplitContainer _marshSplit;
-public static TextBox _marshInput;
-public static TreeView _marshTree;
-
-public static long CreateMarshallingUI() {
-    _marshSplit = new SplitContainer();
-    _marshSplit.Dock = DockStyle.Fill;
-    _marshSplit.SplitterDistance = 520;
-    _marshSplit.BackColor = Color.FromArgb(51, 51, 51);
-    
-    _marshInput = new TextBox();
-    _marshInput.Multiline = true;
-    _marshInput.ScrollBars = ScrollBars.Both;
-    _marshInput.Dock = DockStyle.Fill;
-    _marshInput.BackColor = Color.FromArgb(18, 18, 31);
-    _marshInput.ForeColor = Color.FromArgb(212, 212, 232);
-    _marshInput.Font = new Font("Consolas", 10);
-    _marshInput.Text = "[1, 2, \"three\"]";
-    _marshInput.BorderStyle = BorderStyle.None;
-    
-    _marshTree = new TreeView();
-    _marshTree.Dock = DockStyle.Fill;
-    _marshTree.BackColor = Color.FromArgb(13, 13, 24);
-    _marshTree.ForeColor = Color.FromArgb(74, 222, 128);
-    _marshTree.Font = new Font("Consolas", 10);
-    _marshTree.BorderStyle = BorderStyle.None;
-    
-    _marshSplit.Panel1.Controls.Add(_marshInput);
-    _marshSplit.Panel2.Controls.Add(_marshTree);
-    
-    return _marshSplit.Handle.ToInt64();
-}
-
-public static string GetMarshallingInput() { return _marshInput.Text; }
-public static void SetMarshallingInput(string text) { _marshInput.Text = text; }
-
-public static void PopulateMarshallingTree(object obj) {
-    _marshTree.Nodes.Clear();
-    var root = _marshTree.Nodes.Add("Root");
-    BuildTreeNode(root, obj, 0);
-    root.ExpandAll();
-}
-
-public static void SetMarshallingError(string msg) {
-    _marshTree.Nodes.Clear();
-    _marshTree.Nodes.Add(msg).ForeColor = Color.Red;
-}
-
-private static void BuildTreeNode(TreeNode parent, object obj, int depth) {
-    if (depth > 5) { parent.Nodes.Add("... max depth"); return; }
-    if (obj == null) { parent.Text += " : null"; return; }
-    
-    Type t = obj.GetType();
-    parent.Text += " (" + t.Name + ")";
-    
-    if (t.IsCOMObject) {
-        try {
-            object lenObj = t.InvokeMember("Length", BindingFlags.GetProperty, null, obj, null);
-            int len = Convert.ToInt32(lenObj);
-            for (int i = 1; i <= len; i++) {
-                object item = null;
-                try { item = t.InvokeMember("Item", BindingFlags.GetProperty, null, obj, new object[] { i }); } catch {}
-                var child = parent.Nodes.Add("[" + i + "]");
-                BuildTreeNode(child, item, depth + 1);
-            }
-            return;
-        } catch {}
-        try {
-            object count = t.InvokeMember("Count", BindingFlags.GetProperty, null, obj, null);
-            parent.Nodes.Add("Count: " + count);
-        } catch {}
-    } else if (obj is IEnumerable && !(obj is string)) {
-        IEnumerable enumerable = (IEnumerable)obj;
-        int i = 0;
-        foreach (var item in enumerable) {
-            var child = parent.Nodes.Add("[" + i++ + "]");
-            BuildTreeNode(child, item, depth + 1);
-        }
-    } else {
-        parent.Text += " = " + obj.ToString();
-    }
-}
-
-public static SplitContainer _overSplit;
-public static TextBox _overInput;
-public static TextBox _overResult;
-
-public static long CreateOverloadsUI() {
-    _overSplit = new SplitContainer();
-    _overSplit.Dock = DockStyle.Fill;
-    _overSplit.SplitterDistance = 520;
-    _overSplit.BackColor = Color.FromArgb(51, 51, 51);
-    
-    _overInput = new TextBox();
-    _overInput.Multiline = true;
-    _overInput.ScrollBars = ScrollBars.Both;
-    _overInput.Dock = DockStyle.Fill;
-    _overInput.BackColor = Color.FromArgb(18, 18, 31);
-    _overInput.ForeColor = Color.FromArgb(212, 212, 232);
-    _overInput.Font = new Font("Consolas", 10);
-    _overInput.Text = "[\"123\", 16]";
-    _overInput.BorderStyle = BorderStyle.None;
-    
-    _overResult = new TextBox();
-    _overResult.Multiline = true;
-    _overResult.ScrollBars = ScrollBars.Both;
-    _overResult.Dock = DockStyle.Fill;
-    _overResult.BackColor = Color.FromArgb(13, 13, 24);
-    _overResult.ForeColor = Color.FromArgb(74, 222, 128);
-    _overResult.Font = new Font("Consolas", 10);
-    _overResult.BorderStyle = BorderStyle.None;
-    
-    _overSplit.Panel1.Controls.Add(_overInput);
-    _overSplit.Panel2.Controls.Add(_overResult);
-    
-    return _overSplit.Handle.ToInt64();
-}
-
-public static string GetOverloadsArgs() { return _overInput.Text; }
-public static void SetOverloadsResult(string msg) { _overResult.Text = msg; }
 
 // ── Type Explorer ────────────────────────────────────────────────
 public static Type ResolveType(string typeName) {
@@ -209,11 +88,11 @@ public static string ExploreType(string typeName, bool includeInherited) {
     if (!includeInherited) flags |= BindingFlags.DeclaredOnly;
 
     foreach (var ci in t.GetConstructors(flags)) {
-        var parms = string.Join(", ", ci.GetParameters().Select(p => ShortName(p.ParameterType) + " " + p.Name));
+        var parms = ParamList(ci.GetParameters());
         sb.AppendLine("Constructor|" + t.Name + "|(" + parms + ")|" + (ci.IsStatic ? "Static" : "Instance"));
     }
     foreach (var mi in t.GetMethods(flags).Where(m => !m.IsSpecialName).OrderBy(m => m.Name)) {
-        var parms = string.Join(", ", mi.GetParameters().Select(p => ShortName(p.ParameterType) + " " + p.Name));
+        var parms = ParamList(mi.GetParameters());
         sb.AppendLine("Method|" + mi.Name + "|(" + parms + ") -> " + ShortName(mi.ReturnType) + "|" + (mi.IsStatic ? "Static" : "Instance"));
     }
     foreach (var pi in t.GetProperties(flags).OrderBy(p => p.Name)) {
@@ -253,57 +132,157 @@ private static bool IsStaticP(PropertyInfo pi) {
     return false;
 }
 
-public static string GenerateSnippet(string typeName, string memberName, string memberType) {
-    Type t = null;
-    foreach (var asm in AppDomain.CurrentDomain.GetAssemblies()) {
-        try { t = asm.GetType(typeName, false, true); if (t != null) break; } catch { }
-    }
+private static string ParamList(ParameterInfo[] ps) {
+    return string.Join(", ", ps.Select(p => ShortName(p.ParameterType) + " " + p.Name));
+}
+
+private static string ArgNames(ParameterInfo[] ps) {
+    return string.Join(", ", ps.Select(p => p.Name));
+}
+
+private static string NormSig(string s) {
+    if (s == null) return "";
+    return new string(s.Where(c => !char.IsWhiteSpace(c)).ToArray());
+}
+
+// AHK# expression that refers to a type. Nested and generic types cannot be written as a
+// dotted CS.Namespace.Type path, so they use CS("Full.Name") (with the backtick doubled for AHK).
+private static string SnippetTypeRef(Type t) {
+    string full = t.FullName ?? t.Name;
+    if (t.IsNested || t.IsGenericType)
+        return "CS(\"" + full.Replace("`", "``") + "\")";
+    return "CS." + full;
+}
+
+public static string GenerateSnippet(string typeName, string memberName, string memberType, string signature) {
+    Type t = ResolveType(typeName);
     if (t == null) return "; Type not found";
-    string ns = t.FullName;
+    string tref = SnippetTypeRef(t);
+    string note = t.IsGenericTypeDefinition
+        ? "; NOTE: open generic type - it must be closed with type arguments before use.\n"
+        : "";
+    BindingFlags all = BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.FlattenHierarchy;
+    string want = NormSig(signature);
 
     if (memberType == "Constructor") {
-        var ci = t.GetConstructors().FirstOrDefault();
-        if (ci == null) return "; No constructor";
-        var parms = string.Join(", ", ci.GetParameters().Select(p => p.Name));
-        return "obj := CS." + ns + "(" + parms + ")";
+        var ctors = t.GetConstructors(BindingFlags.Public | BindingFlags.Instance);
+        ConstructorInfo ci = null;
+        foreach (var c in ctors) {
+            if (NormSig("(" + ParamList(c.GetParameters()) + ")") == want) { ci = c; break; }
+        }
+        if (ci == null) ci = ctors.FirstOrDefault();
+        if (ci == null) return note + "; No public constructor";
+        return note + "obj := " + tref + "(" + ArgNames(ci.GetParameters()) + ")";
     }
     if (memberType == "Method") {
-        var mi = t.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static)
-            .FirstOrDefault(m => m.Name == memberName && !m.IsSpecialName);
+        var cands = t.GetMethods(all).Where(m => m.Name == memberName && !m.IsSpecialName).ToList();
+        MethodInfo mi = null;
+        foreach (var m in cands) {
+            string s = "(" + ParamList(m.GetParameters()) + ") -> " + ShortName(m.ReturnType);
+            if (NormSig(s) == want) { mi = m; break; }
+        }
+        if (mi == null) mi = cands.FirstOrDefault();
         if (mi == null) return "; Method not found";
-        var parms = string.Join(", ", mi.GetParameters().Select(p => p.Name));
-        return mi.IsStatic
-            ? "result := CS." + ns + "." + memberName + "(" + parms + ")"
-            : "result := obj." + memberName + "(" + parms + ")";
+        string args = ArgNames(mi.GetParameters());
+        return note + (mi.IsStatic
+            ? "result := " + tref + "." + memberName + "(" + args + ")"
+            : "result := obj." + memberName + "(" + args + ")");
     }
     if (memberType == "Property") {
-        var pi = t.GetProperty(memberName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static);
+        var pi = t.GetProperties(all).FirstOrDefault(p => p.Name == memberName);
         if (pi == null) return "; Property not found";
-        return IsStaticP(pi)
-            ? "value := CS." + ns + "." + memberName
-            : "value := obj." + memberName;
+        string target = IsStaticP(pi) ? tref : "obj";
+        string sb = note + "value := " + target + "." + memberName;
+        if (pi.CanWrite) sb += "\n" + target + "." + memberName + " := value";
+        return sb;
+    }
+    if (memberType == "Field") {
+        var fi = t.GetFields(all).FirstOrDefault(f => f.Name == memberName);
+        if (fi == null) return "; Field not found";
+        return note + "value := " + (fi.IsStatic ? tref : "obj") + "." + memberName;
+    }
+    if (memberType == "Event") {
+        return note + "obj.On(\"" + memberName + "\", (e) => MsgBox(\"" + memberName + " fired\"))";
     }
     return "; " + memberType + ": " + memberName;
 }
 
 // ── Cache Manager ────────────────────────────────────────────────
+// Exported type names of a compiled cache DLL, computed once per file version and remembered.
+private static readonly Dictionary<string, string> _scanCache = new Dictionary<string, string>();
+private static readonly Dictionary<Assembly, string> _typeNameCache = new Dictionary<Assembly, string>();
+
+private static string ExportedTypeNames(Assembly a) {
+    try {
+        var types = a.GetExportedTypes();
+        return types.Length > 0
+            ? string.Join(", ", types.Select(x => x.Name))
+            : "(no exported types)";
+    } catch (ReflectionTypeLoadException rtle) {
+        var names = rtle.Types.Where(x => x != null && x.IsPublic).Select(x => x.Name).ToArray();
+        return names.Length > 0 ? string.Join(", ", names) : "(unable to inspect)";
+    } catch {
+        return "(unable to inspect)";
+    }
+}
+
+private static string ExportedTypeNamesCached(Assembly a) {
+    if (a.IsDynamic) return "(dynamic)";
+    string s;
+    if (_typeNameCache.TryGetValue(a, out s)) return s;
+    s = ExportedTypeNames(a);
+    _typeNameCache[a] = s;
+    return s;
+}
+
+// Never loads the DLL into the executable context and never locks the file:
+//   1. an assembly that is already loaded from that path is reused as-is,
+//   2. otherwise the bytes are loaded reflection-only (metadata only, no code runs),
+//   3. the result is cached per file (path + length + timestamp), so a refresh costs nothing.
+private static string DescribeCachedDll(string dll, FileInfo fi) {
+    string key = dll + "|" + fi.Length + "|" + fi.LastWriteTimeUtc.Ticks;
+    string cached;
+    if (_scanCache.TryGetValue(key, out cached)) return cached;
+
+    string classes = "(unable to inspect)";
+    bool done = false;
+    foreach (var a in AppDomain.CurrentDomain.GetAssemblies()) {
+        if (a.IsDynamic) continue;
+        string loc = null;
+        try { loc = a.Location; } catch { }
+        if (!string.IsNullOrEmpty(loc) && string.Equals(loc, dll, StringComparison.OrdinalIgnoreCase)) {
+            classes = ExportedTypeNames(a);
+            done = true;
+            break;
+        }
+    }
+
+    if (!done) {
+        ResolveEventHandler resolver = (s, e) => {
+            try { return Assembly.ReflectionOnlyLoad(e.Name); } catch { return null; }
+        };
+        AppDomain.CurrentDomain.ReflectionOnlyAssemblyResolve += resolver;
+        try {
+            var asm = Assembly.ReflectionOnlyLoad(File.ReadAllBytes(dll));
+            classes = ExportedTypeNames(asm);
+        } catch {
+            classes = "(unable to inspect)";
+        } finally {
+            AppDomain.CurrentDomain.ReflectionOnlyAssemblyResolve -= resolver;
+        }
+    }
+
+    _scanCache[key] = classes;
+    return classes;
+}
+
 public static string ScanCache() {
     if (!Directory.Exists(_cacheDir)) return "";
     var sb = new StringBuilder();
     foreach (var dll in Directory.GetFiles(_cacheDir, "*.dll")) {
         var fi = new FileInfo(dll);
         string hash = Path.GetFileNameWithoutExtension(dll);
-        string classes = "";
-        try {
-            var bytes = File.ReadAllBytes(dll);
-            var asm = Assembly.Load(bytes);
-            var types = asm.GetExportedTypes();
-            classes = types.Length > 0
-                ? string.Join(", ", types.Select(x => x.Name))
-                : "(no exported types)";
-        } catch {
-            classes = "(unable to inspect)";
-        }
+        string classes = DescribeCachedDll(dll, fi);
         string sizeKB = (fi.Length / 1024.0).ToString("F1") + " KB";
         string created = fi.CreationTime.ToString("yyyy-MM-dd HH:mm");
         sb.AppendLine(hash + "|" + sizeKB + "|" + created + "|" + classes);
@@ -362,40 +341,43 @@ public static string ListAssemblies() {
             }
         } catch { }
 
-        // Get exported classes
-        string classes = "";
-        try {
-            var types = asm.GetExportedTypes();
-            classes = types.Length > 0
-                ? string.Join(", ", types.Select(x => x.Name))
-                : "(none)";
-        } catch {
-            classes = "(unable to inspect)";
-        }
+        // Exported classes (cached per assembly - loaded assemblies never change)
+        string classes = ExportedTypeNamesCached(asm);
 
         sb.AppendLine(n.Name + "|" + n.Version + "|" + sizeStr + "|" + classes + "|" + loc);
     }
     return sb.ToString().TrimEnd();
 }
 
-public static int CleanUnusedCache() {
-    if (!Directory.Exists(_cacheDir)) return 0;
-    
+// Cached DLLs whose assembly is not loaded in this process. Only ever removed by an explicit user action.
+private static List<string> UnusedCacheDlls() {
+    var result = new List<string>();
+    if (!Directory.Exists(_cacheDir)) return result;
+
     var loadedNames = new HashSet<string>(
         AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetName().Name),
         StringComparer.OrdinalIgnoreCase
     );
-    
-    int deleted = 0;
+
     foreach (var dll in Directory.GetFiles(_cacheDir, "*.dll")) {
+        if (!loadedNames.Contains(Path.GetFileNameWithoutExtension(dll)))
+            result.Add(dll);
+    }
+    return result;
+}
+
+public static int CountUnusedCache() {
+    return UnusedCacheDlls().Count;
+}
+
+public static int CleanUnusedCache() {
+    int deleted = 0;
+    foreach (var dll in UnusedCacheDlls()) {
         try {
-            string hash = Path.GetFileNameWithoutExtension(dll);
-            if (!loadedNames.Contains(hash)) {
-                string csFile = Path.Combine(_cacheDir, hash + ".cs");
-                if (File.Exists(dll)) File.Delete(dll);
-                if (File.Exists(csFile)) File.Delete(csFile);
-                deleted++;
-            }
+            string csFile = Path.Combine(_cacheDir, Path.GetFileNameWithoutExtension(dll) + ".cs");
+            File.Delete(dll);
+            if (File.Exists(csFile)) File.Delete(csFile);
+            deleted++;
         } catch { }
     }
     return deleted;
@@ -485,100 +467,69 @@ public static string GetPackageDlls(string name, string ver) {
     return string.Join(";", dlls);
 }
 
-// ── Marshalling Inspector ────────────────────────────────────────
-public static string InspectType(object obj) {
-    if (obj == null) return "null";
-    var sb = new StringBuilder();
-    InspectInternal(obj, sb, 0);
-    return sb.ToString().TrimEnd();
-}
-
-private static void InspectInternal(object obj, StringBuilder sb, int depth) {
-    string indent = new string(' ', depth * 4);
-    if (obj == null) {
-        sb.AppendLine(indent + "null");
-        return;
-    }
-    Type t = obj.GetType();
-    sb.AppendLine(indent + "Type: " + t.FullName);
-    if (t.IsArray) {
-        Array arr = (Array)obj;
-        sb.AppendLine(indent + "Array Length: " + arr.Length);
-        int limit = Math.Min(arr.Length, 10);
-        for (int i = 0; i < limit; i++) {
-            sb.AppendLine(indent + "  [" + i + "]:");
-            InspectInternal(arr.GetValue(i), sb, depth + 1);
-        }
-        if (arr.Length > 10) sb.AppendLine(indent + "  ... (" + (arr.Length - 10) + " more items)");
-    } else if (obj is IDictionary) {
-        IDictionary dict = (IDictionary)obj;
-        sb.AppendLine(indent + "Dictionary Count: " + dict.Count);
-        int count = 0;
-        foreach (DictionaryEntry kv in dict) {
-            if (count++ >= 10) { sb.AppendLine(indent + "  ... more items"); break; }
-            sb.AppendLine(indent + "  Key:");
-            InspectInternal(kv.Key, sb, depth + 1);
-            sb.AppendLine(indent + "  Value:");
-            InspectInternal(kv.Value, sb, depth + 1);
-        }
-    } else if (t.IsCOMObject) {
-        sb.AppendLine(indent + "COM Object Detected (IDispatch)");
-        try {
-            object count = t.InvokeMember("Count", BindingFlags.GetProperty, null, obj, null);
-            sb.AppendLine(indent + "  Count: " + count);
-        } catch { }
-        try {
-            object lengthObj = t.InvokeMember("Length", BindingFlags.GetProperty, null, obj, null);
-            sb.AppendLine(indent + "  Length: " + lengthObj);
-            try {
-                int len = Convert.ToInt32(lengthObj);
-                int limit = Math.Min(len, 10);
-                for (int i = 1; i <= limit; i++) {
-                    try {
-                        object item = t.InvokeMember("Item", BindingFlags.GetProperty, null, obj, new object[] { i });
-                        sb.AppendLine(indent + "  [" + i + "]: " + (item != null ? item.ToString() : "null"));
-                    } catch {}
-                }
-                if (len > 10) sb.AppendLine(indent + "  ... (" + (len - 10) + " more items)");
-            } catch {}
-        } catch { }
-    } else if (t.IsPrimitive || t == typeof(string)) {
-        sb.AppendLine(indent + "Value: " + obj.ToString());
-    } else {
-        sb.AppendLine(indent + "ToString: " + obj.ToString());
-    }
-}
-
 // ── Overload Predictor ───────────────────────────────────────────
+private static bool CanCoerceArg(Type fromType, Type toType) {
+    if (toType.IsAssignableFrom(fromType)) return true;
+    if (toType.IsPrimitive && fromType.IsPrimitive) return true;
+    if (toType == typeof(string) || toType == typeof(object)) return true;
+    return false;
+}
+
+private static string MethodSig(MethodInfo m) {
+    return ShortName(m.ReturnType) + " " + m.Name + "(" + ParamList(m.GetParameters()) + ")";
+}
+
+// Self-contained overload prediction. It follows the same tiers the AHK# bridge uses when it binds a
+// call (exact count + coercible types, then count only, then params[], then the first overload) but
+// does not reflect into the bridge's private members, so it cannot break when the bridge changes.
+// Treat the answer as a prediction: the bridge remains the authority at call time.
 public static string PredictOverload(string typeName, string methodName, object[] args) {
     Type t = ResolveType(typeName);
     if (t == null) return "ERROR:Type not found: " + typeName;
-
     if (args == null) args = new object[0];
 
-    Type bridgeType = null;
-    foreach (var asm in AppDomain.CurrentDomain.GetAssemblies()) {
-        if (asm.GetName().Name == "ahk#.bridge") {
-            bridgeType = asm.GetType("AhkSharpBridge");
-            break;
+    BindingFlags flags = BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public | BindingFlags.FlattenHierarchy;
+    MethodInfo[] methods = t.GetMethods(flags).Where(x => x.Name == methodName).ToArray();
+    if (methods.Length == 0) return "ERROR:No public method '" + methodName + "' on " + t.FullName;
+
+    MethodInfo pick = null;
+    string rule = "";
+
+    foreach (MethodInfo m in methods) {
+        ParameterInfo[] ps = m.GetParameters();
+        if (ps.Length != args.Length) continue;
+        bool ok = true;
+        for (int i = 0; i < ps.Length; i++) {
+            if (args[i] != null && !CanCoerceArg(args[i].GetType(), ps[i].ParameterType)) { ok = false; break; }
+        }
+        if (ok) { pick = m; rule = "parameter count and argument types match"; break; }
+    }
+    if (pick == null) {
+        foreach (MethodInfo m in methods) {
+            if (m.GetParameters().Length == args.Length) {
+                pick = m; rule = "parameter count matches (argument types are coerced at call time)"; break;
+            }
         }
     }
-    if (bridgeType == null) return "ERROR:AhkSharpBridge not found in AppDomain.";
-
-    MethodInfo resolveMethod = bridgeType.GetMethod("ResolveMethod", BindingFlags.NonPublic | BindingFlags.Static);
-    if (resolveMethod == null) return "ERROR:ResolveMethod not found in AhkSharpBridge.";
-
-    BindingFlags flags = BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public | BindingFlags.FlattenHierarchy;
-    
-    try {
-        MethodInfo mi = (MethodInfo)resolveMethod.Invoke(null, new object[] { t, methodName, args, flags });
-        if (mi == null) return "No matching overload found for the given arguments.";
-
-        var parms = string.Join(", ", mi.GetParameters().Select(p => ShortName(p.ParameterType) + " " + p.Name));
-        return "Selected Overload:\n" + ShortName(mi.ReturnType) + " " + mi.Name + "(" + parms + ")";
-    } catch (Exception ex) {
-        return "ERROR:" + (ex.InnerException != null ? ex.InnerException.Message : ex.Message);
+    if (pick == null) {
+        foreach (MethodInfo m in methods) {
+            ParameterInfo[] ps = m.GetParameters();
+            if (ps.Length > 0 && ps[ps.Length - 1].GetCustomAttributes(typeof(ParamArrayAttribute), false).Length > 0
+                && args.Length >= ps.Length - 1) {
+                pick = m; rule = "params[] overload accepts the extra arguments"; break;
+            }
+        }
     }
+    if (pick == null) { pick = methods[0]; rule = "nothing fits - falling back to the first overload"; }
+
+    var sb = new StringBuilder();
+    sb.Append("Selected Overload:\n").Append(MethodSig(pick)).Append("\n");
+    sb.Append("Rule: ").Append(rule).Append("\n");
+    sb.Append("Arguments: [").Append(string.Join(", ", args.Select(a => a == null ? "null" : a.GetType().Name))).Append("]\n");
+    sb.Append("\nAll overloads (").Append(methods.Length).Append("):\n");
+    foreach (MethodInfo m in methods)
+        sb.Append(m == pick ? "  * " : "    ").Append(MethodSig(m)).Append("\n");
+    return sb.ToString().TrimEnd();
 }
 
 // ── Visual Wrapper Auto-Generator ────────────────────────────────
@@ -653,33 +604,45 @@ public static string GetAssemblyTypes(string pathOrName) {
     return sb.ToString().TrimEnd();
 }
 
+// Hard limits so a huge window (browser, IDE) cannot freeze the workbench: the walk stops at
+// UiaMaxNodes elements or UiaMaxMillis milliseconds and the result is flagged with a #TRUNCATED line.
+private const int UiaMaxNodes = 4000;
+private const int UiaMaxMillis = 8000;
+
 public static string GetUiaTree(long hwnd) {
     if (hwnd == 0) return "ERROR: Invalid HWND";
     try {
         var winEl = System.Windows.Automation.AutomationElement.FromHandle((IntPtr)hwnd);
         if (winEl == null) return "ERROR: Failed to get AutomationElement";
-        
+
         var sb = new StringBuilder();
-        BuildTreeString(winEl, sb, 0);
+        var sw = Stopwatch.StartNew();
+        int count = 0;
+        bool truncated = false;
+        BuildTreeString(winEl, sb, 0, sw, ref count, ref truncated);
+        if (truncated)
+            sb.AppendLine("#TRUNCATED|" + count + "|" + sw.ElapsedMilliseconds);
         return sb.ToString();
     } catch (Exception ex) {
         return "ERROR: " + ex.Message;
     }
 }
 
-private static void BuildTreeString(System.Windows.Automation.AutomationElement el, StringBuilder sb, int depth) {
+private static void BuildTreeString(System.Windows.Automation.AutomationElement el, StringBuilder sb, int depth,
+                                    Stopwatch sw, ref int count, ref bool truncated) {
     if (depth > 30) return; // Prevent stack overflow and extremely deep scans
-    
+    if (count >= UiaMaxNodes || sw.ElapsedMilliseconds > UiaMaxMillis) { truncated = true; return; }
+
     try {
         string name = el.Current.Name ?? "";
         string type = el.Current.ControlType.ProgrammaticName.Replace("ControlType.", "");
         string id = el.Current.AutomationId ?? "";
         string className = el.Current.ClassName ?? "";
-        
+
         name = name.Replace("|", " ").Replace("\r", " ").Replace("\n", " ");
         id = id.Replace("|", " ").Replace("\r", " ").Replace("\n", " ");
         className = className.Replace("|", " ").Replace("\r", " ").Replace("\n", " ");
-        
+
         string rectStr = "";
         try {
             var rect = el.Current.BoundingRectangle;
@@ -687,15 +650,18 @@ private static void BuildTreeString(System.Windows.Automation.AutomationElement 
         } catch {
             rectStr = "0,0,0,0";
         }
-        
+
         sb.AppendLine(string.Format("{0}|{1}|{2}|{3}|{4}|{5}", depth, name, type, id, className, rectStr));
-        
+        count++;
+
         var children = el.FindAll(System.Windows.Automation.TreeScope.Children, System.Windows.Automation.Condition.TrueCondition);
         foreach (System.Windows.Automation.AutomationElement child in children) {
-            BuildTreeString(child, sb, depth + 1);
+            if (truncated) break;
+            BuildTreeString(child, sb, depth + 1, sw, ref count, ref truncated);
         }
     } catch {}
 }
+
 
 public static string GetUiaElementAtPoint(int x, int y) {
     try {

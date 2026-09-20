@@ -1,4 +1,4 @@
-# AHK# Bridge v2.0 — Full Build Script
+# AHK# Bridge v2.0.0 — Full Build Script
 # Compiles ALL C# source files into a single ahk#.bridge.dll
 # Uses content-hashing for aggressive caching — only recompiles when source changes.
 #
@@ -90,8 +90,23 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# ── Warnings ───────────────────────────────────────────────────────────────
+$warnings = @($output | Where-Object { $_ -match "warning CS" })
+if ($warnings.Count -gt 0) {
+    Write-Host "[AHK#] $($warnings.Count) compiler warning(s):" -ForegroundColor Yellow
+    $warnings | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+}
+
 # ── Success ────────────────────────────────────────────────────────────────
 $srcHash | Out-File $hashFile -Encoding UTF8 -NoNewline
+
+# Pin the DLL's SHA-256 inside ahk#.ahk so AutoHotkey refuses a swapped or stale bridge
+$dllHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $outDll).Hash.ToLower()
+$ahkLib = Join-Path $libDir "ahk#.ahk"
+$libText = [System.IO.File]::ReadAllText($ahkLib)
+$pinned = [regex]::Replace($libText, '(?m)^AHK_SHARP_BRIDGE_SHA256 := "[0-9a-f]*"', "AHK_SHARP_BRIDGE_SHA256 := `"$dllHash`"")
+if ($pinned -ne $libText) { [System.IO.File]::WriteAllText($ahkLib, $pinned, (New-Object System.Text.UTF8Encoding($false))) }
+Write-Host "[AHK#] Pinned bridge SHA-256: $dllHash" -ForegroundColor DarkGray
 $dllSize = (Get-Item $outDll).Length / 1KB
 Write-Host "[AHK#] Bridge compiled successfully: $([math]::Round($dllSize, 1)) KB ($($sourceFiles.Count) source files)" -ForegroundColor Green
 Write-Host "[AHK#] Output: $outDll" -ForegroundColor DarkGray

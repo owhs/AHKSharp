@@ -1,4 +1,4 @@
-﻿;; AHK# Example 05 — Full Stack Demo
+﻿;; AHK# — Full Stack Demo
 ;; Combines multiple AHK# modules in a single script.
 
 #Requires AutoHotkey v2.0
@@ -14,13 +14,15 @@ class DataProcessor extends _CSModule {
     static CSharp := "
     (
         using System.Linq;
-        
-        public static double StandardDeviation(double[] values) {
-            double avg = values.Average();
-            double sumOfSquares = values.Sum(v => (v - avg) * (v - avg));
-            return Math.Sqrt(sumOfSquares / values.Length);
+
+        // AHK arrays arrive as object[]; convert to doubles for LINQ
+        public static double StandardDeviation(object[] values) {
+            double[] v = values.Select(x => Convert.ToDouble(x)).ToArray();
+            double avg = v.Average();
+            double sumOfSquares = v.Sum(d => (d - avg) * (d - avg));
+            return Math.Sqrt(sumOfSquares / v.Length);
         }
-        
+
         public static string[] SortWords(string text) {
             return text.Split(' ')
                 .Where(w => w.Length > 0)
@@ -29,6 +31,13 @@ class DataProcessor extends _CSModule {
         }
     )"
 }
+
+scores := [95.5, 87.3, 92.1, 78.4, 88.8]
+stdDev := DataProcessor.StandardDeviation(scores)
+
+sortedWords := ""
+for word in DataProcessor.SortWords("the quick brown fox jumps over the lazy dog")
+    sortedWords .= (A_Index > 1 ? ", " : "") word
 
 ; ══════════════════════════════════════════════════════════════════════════════
 ; 2. Direct .NET Access
@@ -41,7 +50,7 @@ cores := CS.System.Environment.ProcessorCount
 machine := CS.System.Environment.MachineName
 
 ; ══════════════════════════════════════════════════════════════════════════════
-; 4. SQLite (in-memory)
+; 3. SQLite (in-memory)
 ; ══════════════════════════════════════════════════════════════════════════════
 
 db := SQLite(":memory:")
@@ -54,10 +63,13 @@ topScore := db.Scalar("SELECT name FROM users ORDER BY score DESC LIMIT 1")
 userCount := db.Scalar("SELECT COUNT(*) FROM users")
 
 ; ══════════════════════════════════════════════════════════════════════════════
-; 5. Display Results
+; 4. Display Results
 ; ══════════════════════════════════════════════════════════════════════════════
 
 msg := "═══ AHK# Full Stack Demo ═══"
+    . "`n"
+    . "`n▸ CSModule (LINQ): std dev of 95.5, 87.3, 92.1, 78.4, 88.8 = " Format("{:.2f}", stdDev)
+    . "`n        sorted words: " sortedWords
     . "`n"
     . "`n▸ GUIDs: " guid1
     . "`n        " guid2

@@ -336,7 +336,15 @@ btnVibeStop.OnEvent("Click", (*) => Gamepad.StopVibrate(playerIdx()))
 ; Scan all on startup
 connText.Value := Gamepad.ScanAll()
 
-g.OnEvent("Close", (*) => (Gamepad.StopVibrate(0), ExitApp()))
+; Any of the four pads may still be rumbling (the Player dropdown can target 0-3), so on
+; every exit path stop the motors on ALL of them, not just player 1.
+StopAllVibration(*) {
+    Loop 4 {
+        try Gamepad.StopVibrate(A_Index - 1)
+    }
+}
+OnExit(StopAllVibration)
+g.OnEvent("Close", (*) => (StopAllVibration(), ExitApp()))
 g.Show("w500 h390")
 
 WinWaitClose(g.Hwnd)

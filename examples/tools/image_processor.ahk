@@ -21,29 +21,42 @@ class ImageProcessor extends _CSModule {
             if (string.IsNullOrEmpty(filesString)) return "No files provided.";
             string[] files = filesString.Split('|');
             Directory.CreateDirectory(outDir);
-            
+
+            // Look the JPEG *encoder* up by MIME type - list indexes differ between Windows versions
+            // (and GetImageDecoders() returns decoders, not encoders).
+            ImageCodecInfo encoder = null;
+            foreach (ImageCodecInfo codec in ImageCodecInfo.GetImageEncoders()) {
+                if (codec.MimeType == "image/jpeg") { encoder = codec; break; }
+            }
+            if (encoder == null) return "No JPEG encoder is available on this system.";
+
             int success = 0;
             // Maximize CPU usage to process multiple images concurrently!
             Parallel.ForEach(files, file => {
                 try {
-                    using (Image img = Image.FromFile(file))
-                    using (Bitmap bmp = new Bitmap(thumbW, thumbH))
-                    using (Graphics g = Graphics.FromImage(bmp)) {
-                        // High quality resizing
-                        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                        g.SmoothingMode = SmoothingMode.AntiAlias;
-                        g.DrawImage(img, 0, 0, thumbW, thumbH);
-                        
-                        string name = Path.GetFileNameWithoutExtension(file);
-                        string outPath = Path.Combine(outDir, name + "_thumb.jpg");
-                        
-                        // Save as high-quality JPEG
-                        var encoder = ImageCodecInfo.GetImageDecoders()[1]; // JPG
-                        var p = new EncoderParameters(1);
-                        p.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 90L);
-                        
-                        bmp.Save(outPath, encoder, p);
-                        System.Threading.Interlocked.Increment(ref success);
+                    using (Image img = Image.FromFile(file)) {
+                        // Fit inside thumbW x thumbH keeping the aspect ratio (never enlarge)
+                        double scale = Math.Min(1.0, Math.Min((double)thumbW / img.Width, (double)thumbH / img.Height));
+                        int w = Math.Max(1, (int)Math.Round(img.Width * scale));
+                        int h = Math.Max(1, (int)Math.Round(img.Height * scale));
+
+                        using (Bitmap bmp = new Bitmap(w, h))
+                        using (Graphics g = Graphics.FromImage(bmp)) {
+                            // High quality resizing
+                            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                            g.SmoothingMode = SmoothingMode.AntiAlias;
+                            g.DrawImage(img, 0, 0, w, h);
+
+                            string name = Path.GetFileNameWithoutExtension(file);
+                            string outPath = Path.Combine(outDir, name + "_thumb.jpg");
+
+                            // Save as high-quality JPEG
+                            using (var p = new EncoderParameters(1)) {
+                                p.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 90L);
+                                bmp.Save(outPath, encoder, p);
+                            }
+                            System.Threading.Interlocked.Increment(ref success);
+                        }
                     }
                 } catch { } // Skip invalid files silently
             });
@@ -58,7 +71,7 @@ g := Gui("", "AHK# — Parallel Image Resizer")
 g.SetFont("s14 cBlack", "Segoe UI")
 g.Add("Text", "w400 center", "Drag && Drop Images Here!")
 g.SetFont("s10")
-g.Add("Text", "w400 center", "(They will be resized to 256x256 JPEGs in a 'thumbs' folder)")
+g.Add("Text", "w400 center", "(They will be shrunk to fit 256x256, keeping their aspect ratio, as JPEGs in a 'thumbs' folder)")
 
 lblStatus := g.Add("Text", "w400 center y+20 cBlue", "Waiting for files...")
 

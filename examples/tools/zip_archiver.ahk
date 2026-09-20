@@ -16,9 +16,11 @@ class ZipArchiver extends _CSModule {
 
         public static string CompressFolder(string folderPath, string zipFilePath) {
             try {
-                if (File.Exists(zipFilePath)) 
-                    File.Delete(zipFilePath);
-                    
+                // Never delete an existing archive here: the AHK side asks the user first
+                // (CreateFromDirectory throws if the target file already exists).
+                if (File.Exists(zipFilePath))
+                    return "ERR: " + zipFilePath + " already exists";
+
                 // CreateFromDirectory compresses the whole folder natively
                 ZipFile.CreateFromDirectory(folderPath, zipFilePath, CompressionLevel.Optimal, false);
                 return "SUCCESS";
@@ -52,8 +54,17 @@ txtFolder := g.Add("Edit", "x110 y10 w260", A_ScriptDir)
 btnZip := g.Add("Button", "x380 y9 w70", "Zip It!")
 btnZip.OnEvent("Click", (*) => ZipFolder())
 
+; "Zip It!" writes backup.zip NEXT TO the chosen folder (never inside it, or the archive
+; would try to include itself). The extract box defaults to that same location.
+DefaultZipPath(folder) {
+    SplitPath(RTrim(folder, "\"), , &parent)
+    return (parent != "" ? parent : A_MyDocuments) "\backup.zip"
+}
+
+lastZipPath := ""
+
 g.Add("Text", "x10 y55", "Zip to Extract:")
-txtZip := g.Add("Edit", "x110 y50 w260", A_ScriptDir "\backup.zip")
+txtZip := g.Add("Edit", "x110 y50 w260", DefaultZipPath(A_ScriptDir))
 btnExtract := g.Add("Button", "x380 y49 w70", "Extract!")
 btnExtract.OnEvent("Click", (*) => ExtractZip())
 
@@ -63,23 +74,34 @@ g.Show("w460 h120")
 g.OnEvent("Close", (*) => ExitApp())
 
 ZipFolder() {
-    folder := txtFolder.Value
-    zipFile := txtFolder.Value "\..\backup.zip"
-    
+    global lastZipPath
+    folder := RTrim(txtFolder.Value, "\")
+    zipFile := DefaultZipPath(folder)
+
     if !DirExist(folder)
         return MsgBox("Target folder doesn't exist!")
-        
+
+    ; Never silently destroy an existing backup: ask first
+    if FileExist(zipFile) {
+        if (MsgBox(zipFile " already exists.`n`nOverwrite it?", "Zip It", "YesNo Icon?") != "Yes")
+            return
+        try FileDelete(zipFile)
+        catch as err
+            return MsgBox("Could not remove the existing archive:`n" err.Message, "Zip It", "Icon!")
+    }
+
+    lastZipPath := zipFile
     lblStatus.Value := "Compressing folder asynchronously..."
-    
+
     ZipArchiver.Async.CompressFolder(folder, zipFile).Then(OnZipDone)
 }
 
 OnZipDone(result) {
-    global lblStatus, txtFolder
-    zipFile := txtFolder.Value "\..\backup.zip"
-    if (result == "SUCCESS")
-        lblStatus.Value := "Successfully created " zipFile "!"
-    else
+    global lblStatus, txtZip, lastZipPath
+    if (result == "SUCCESS") {
+        txtZip.Value := lastZipPath        ; the Extract box now points at what was just written
+        lblStatus.Value := "Successfully created " lastZipPath "!"
+    } else
         lblStatus.Value := result
 }
 

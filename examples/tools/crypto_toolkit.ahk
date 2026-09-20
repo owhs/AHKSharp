@@ -14,17 +14,23 @@ class Crypto extends _CSModule {
         using System.Text;
         using System.Linq;
 
-        public static string Hash(string algorithm, string input) {
-            HashAlgorithm hasher;
+        static HashAlgorithm CreateHasher(string algorithm) {
             switch (algorithm.ToUpper()) {
-                case "MD5":    hasher = MD5.Create(); break;
-                case "SHA1":   hasher = SHA1.Create(); break;
-                case "SHA256": hasher = SHA256.Create(); break;
-                case "SHA512": hasher = SHA512.Create(); break;
-                default: return "Unknown algorithm: " + algorithm;
+                case "MD5":    return MD5.Create();
+                case "SHA1":   return SHA1.Create();
+                case "SHA256": return SHA256.Create();
+                case "SHA512": return SHA512.Create();
+                default:       return null;
             }
-            byte[] bytes = hasher.ComputeHash(Encoding.UTF8.GetBytes(input));
-            return BitConverter.ToString(bytes).Replace("-", "").ToLower();
+        }
+
+        public static string Hash(string algorithm, string input) {
+            // using() disposes the hasher (using on null is allowed for unknown algorithms)
+            using (HashAlgorithm hasher = CreateHasher(algorithm)) {
+                if (hasher == null) return "Unknown algorithm: " + algorithm;
+                byte[] bytes = hasher.ComputeHash(Encoding.UTF8.GetBytes(input));
+                return BitConverter.ToString(bytes).Replace("-", "").ToLower();
+            }
         }
 
         public static string ToBase64(string input) {
@@ -37,12 +43,24 @@ class Crypto extends _CSModule {
 
         public static string GeneratePassword(int length) {
             const string chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
-            var rng = new RNGCryptoServiceProvider();
-            byte[] data = new byte[length];
-            rng.GetBytes(data);
+            if (length <= 0) return "";
+
+            // Rejection sampling: 256 is not a multiple of chars.Length, so a plain
+            // "byte % chars.Length" would favour the first few characters. Only accept
+            // bytes below the largest multiple of chars.Length that fits in a byte.
+            int limit = 256 - (256 % chars.Length);
             char[] result = new char[length];
-            for (int i = 0; i < length; i++)
-                result[i] = chars[data[i] % chars.Length];
+            byte[] data = new byte[Math.Max(length, 32)];
+            int filled = 0;
+            using (var rng = new RNGCryptoServiceProvider()) {
+                while (filled < length) {
+                    rng.GetBytes(data);
+                    for (int i = 0; i < data.Length && filled < length; i++) {
+                        if (data[i] < limit)
+                            result[filled++] = chars[data[i] % chars.Length];
+                    }
+                }
+            }
             return new string(result);
         }
 

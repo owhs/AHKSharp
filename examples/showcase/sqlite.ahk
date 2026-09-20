@@ -1,4 +1,4 @@
-﻿;; AHK# Example 07 — SQLite Database Manager
+﻿;; AHK# — SQLite Database Manager
 ;; Demonstrates the full SQLite extension: tables, CRUD, transactions, queries.
 
 #Requires AutoHotkey v2.0
@@ -20,6 +20,7 @@ db.Execute("CREATE TABLE contributors (id INTEGER PRIMARY KEY AUTOINCREMENT, nam
 ; ══════════════════════════════════════════════════════════════════════════════
 ; 2. Insert Data with Parameterized Queries
 ; ══════════════════════════════════════════════════════════════════════════════
+; NOTE: all rows below are sample data — the star counts are illustrative, not live figures.
 
 db.Execute("INSERT INTO projects (name, language, stars, created_at) VALUES (?, ?, ?, ?)"
     , "AHK#", "AHK2/C#", 1500, "2024-01-15")
@@ -49,7 +50,7 @@ totalStars := db.Scalar("SELECT SUM(stars) FROM projects")
 topProject := db.Scalar("SELECT name FROM projects ORDER BY stars DESC LIMIT 1")
 avgStars := db.Scalar("SELECT ROUND(AVG(stars), 0) FROM projects")
 
-msg1 := "═══ SQLite Summary ═══"
+msg1 := "═══ SQLite Summary (sample data) ═══"
     . "`n▸ Projects:     " totalProjects
     . "`n▸ Total Stars:  " totalStars
     . "`n▸ Top Project:  " topProject
@@ -64,7 +65,7 @@ joinSql := "SELECT p.name, p.language, p.stars, COUNT(c.id) as contributors "
     . "GROUP BY p.id ORDER BY p.stars DESC"
 rows := db.Query(joinSql)
 
-msg2 := "`n`n═══ Project Table ═══"
+msg2 := "`n`n═══ Project Table (sample stars) ═══"
 for row in rows {
     msg2 .= "`n  " row["name"]
         . " (" row["language"] ")"

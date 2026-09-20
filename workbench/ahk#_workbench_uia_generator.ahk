@@ -351,11 +351,11 @@ OnSendToScratchpad(*) {
         return
     }
     
-    ; Activate the interactive Scratchpad tab (which is tab index 2)
-    OnTabClick(customTabs[2])
+    ; Activate the interactive Scratchpad tab
+    OnTabClick(customTabs[TAB_SCRATCH])
     
-    ; Set the Mode to "C# Class" (which is option 2 in the dropdown)
-    ddlMode.Choose(2)
+    ; Set the Mode to "C# Class"
+    ddlMode.Choose(MODE_CLASS)
     
     ; Set the code editor value
     edCode.Value := code

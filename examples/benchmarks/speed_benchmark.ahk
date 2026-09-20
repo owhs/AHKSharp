@@ -1,10 +1,22 @@
 ﻿;; AHK# Example 17 — MEGA Speed Benchmark: Native AHK vs AHK# (.NET)
 ;; Full graphical dashboard rendered pixel-perfect via System.Drawing.
-;; 12 head-to-head benchmarks. DPI-aware. Zero stretching.
+;; 17 head-to-head benchmarks. DPI-aware. Zero stretching.
+;;
+;; Methodology
+;;   - Timing uses QueryPerformanceCounter; each test is run 3 times and the MEDIAN is used.
+;;   - The C# side is warmed up (JIT + bridge binding) once before it is timed.
+;;   - Every test returns a result/checksum on both sides; the OK column reports whether the
+;;     AHK and C# answers actually match (mismatched tests are excluded from the summary).
+;;   - C# times are in-process compute measured around a single bridge call per run, except
+;;     "Fib(70)x10K", which deliberately makes 10,000 bridge calls.
+;;   - The headline number is the GEOMETRIC MEAN of the per-test speedups (AHK ms / C# ms),
+;;     so a few huge ratios cannot dominate it.
 
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 #Include ..\..\lib\ahk#.ahk
+
+ListLines(0)   ; stop AHK from logging every executed line (it slows the native loops)
 
 ; ══════════════════════════════════════════════════════════════════════════════
 ; C# benchmark implementations
@@ -34,8 +46,10 @@ class CSBench extends _CSModule {
             for (int i = 0; i < n; i++) { long t = a + b; a = b; b = t; } return a;
         }
         public static string HashRepeat(string input, int iterations) {
-            var sha = SHA256.Create(); byte[] d = Encoding.UTF8.GetBytes(input);
-            for (int i = 0; i < iterations; i++) d = sha.ComputeHash(d);
+            byte[] d = Encoding.UTF8.GetBytes(input);
+            using (var sha = SHA256.Create()) {
+                for (int i = 0; i < iterations; i++) d = sha.ComputeHash(d);
+            }
             return BitConverter.ToString(d).Replace("-", "").ToLower();
         }
         public static int RegexExtract(string text) {
@@ -45,12 +59,13 @@ class CSBench extends _CSModule {
             var sb = new StringBuilder();
             for (int r = 0; r < rows; r++) {
                 for (int c = 0; c < cols; c++) { if (c > 0) sb.Append(','); sb.Append(r * cols + c); }
-                sb.AppendLine();
+                sb.Append('\n');
             } return sb.Length;
         }
-        public static int SortArray(int count) {
-            var rng = new Random(42); int[] arr = new int[count];
-            for (int i = 0; i < count; i++) arr[i] = rng.Next();
+        // Same LCG as the AHK side so both sort identical data
+        public static long SortArray(int count) {
+            long seed = 42; long[] arr = new long[count];
+            for (int i = 0; i < count; i++) { seed = (seed * 1103515245L + 12345L) % 2147483648L; arr[i] = seed; }
             Array.Sort(arr); return arr[0];
         }
         public static double ComputePi(int terms) {
@@ -58,10 +73,11 @@ class CSBench extends _CSModule {
             for (int i = 0; i < terms; i++) pi += (i % 2 == 0 ? 1.0 : -1.0) / (2 * i + 1);
             return pi * 4;
         }
-        public static int StringReplace(string text, int iterations) {
+        // Ordinal (case-sensitive) replace - matches StrReplace(..., CaseSense=true)
+        public static string StringReplace(string text, int iterations) {
             string result = text;
             for (int i = 0; i < iterations; i++) result = result.Replace("the", "THE").Replace("THE", "the");
-            return result.Length;
+            return result;
         }
         public static int CollatzMax(int limit) {
             int maxLen = 0;
@@ -71,26 +87,33 @@ class CSBench extends _CSModule {
                 if (len > maxLen) maxLen = len;
             } return maxLen;
         }
-        public static int WordFrequency(string text) {
+        public static long WordFrequency(string text) {
             var words = text.Split(new[] { ' ', '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries);
             var freq = new Dictionary<string, int>();
             foreach (var w in words) { string l = w.ToLower(); if (freq.ContainsKey(l)) freq[l]++; else freq[l] = 1; }
-            return freq.Count;
+            return freq.Count * 100000L + (freq.ContainsKey("alpha") ? freq["alpha"] : 0);
         }
-        public static int MatrixMultiply(int size) {
-            double[,] a = new double[size, size], b = new double[size, size], c = new double[size, size];
-            var rng = new Random(42);
-            for (int i = 0; i < size; i++) for (int j = 0; j < size; j++) { a[i,j] = rng.NextDouble(); b[i,j] = rng.NextDouble(); }
-            for (int i = 0; i < size; i++) for (int j = 0; j < size; j++) { double s = 0; for (int k = 0; k < size; k++) s += a[i,k] * b[k,j]; c[i,j] = s; }
-            return size;
+        // Same LCG as the AHK side; returns the sum of all result elements
+        public static double MatrixMultiply(int size) {
+            double[,] a = new double[size, size], b = new double[size, size];
+            long seed = 42;
+            for (int i = 0; i < size; i++) for (int j = 0; j < size; j++) {
+                seed = (seed * 1103515245L + 12345L) % 2147483648L; a[i,j] = seed / 2147483648.0;
+                seed = (seed * 1103515245L + 12345L) % 2147483648L; b[i,j] = seed / 2147483648.0;
+            }
+            double total = 0;
+            for (int i = 0; i < size; i++) for (int j = 0; j < size; j++) {
+                double s = 0; for (int k = 0; k < size; k++) s += a[i,k] * b[k,j]; total += s;
+            }
+            return total;
         }
 
         // ── Tests where AHK is competitive ──────────────────────────
-        public static int MapInsertLookup(int count) {
+        public static long MapInsertLookup(int count) {
             var dict = new Dictionary<string, int>();
-            for (int i = 0; i < count; i++) dict["key" + i] = i;
-            int sum = 0;
-            for (int i = 0; i < count; i++) sum += dict["key" + i];
+            for (int i = 1; i <= count; i++) dict["key" + i] = i;
+            long sum = 0;
+            for (int i = 1; i <= count; i++) sum += dict["key" + i];
             return sum;
         }
         public static int ParseLines(string text) {
@@ -105,16 +128,16 @@ class CSBench extends _CSModule {
                 total += Regex.Matches(text, @"\d+").Count;
             return total;
         }
-        public static int ArrayBuild(int count) {
-            var list = new List<int>();
-            for (int i = 0; i < count; i++) list.Add(i * 3 + 7);
-            int sum = 0;
+        public static long ArrayBuild(int count) {
+            var list = new List<long>();
+            for (int i = 1; i <= count; i++) list.Add(i * 3L + 7);
+            long sum = 0;
             foreach (var v in list) sum += v;
             return sum;
         }
         public static long Conditionals(int iterations) {
             long sum = 0;
-            for (int i = 0; i < iterations; i++) {
+            for (int i = 1; i <= iterations; i++) {
                 if (i % 3 == 0) sum += 1;
                 else if (i % 5 == 0) sum += 2;
                 else if (i % 7 == 0) sum += 3;
@@ -137,6 +160,7 @@ class ChartImg extends _CSModule {
         using System.Drawing;
         using System.Drawing.Drawing2D;
         using System.Drawing.Text;
+        using System.Globalization;
         using System.Collections.Generic;
 
         static Color Accent = Color.FromArgb(0, 255, 136);
@@ -151,7 +175,20 @@ class ChartImg extends _CSModule {
             return Color.FromArgb(255, 100, 100);
         }
 
+        // Small helpers so every Brush/Pen is disposed right after use
+        static void Txt(Graphics g, string s, Font f, Color c, float x, float y) {
+            using (var br = new SolidBrush(c)) g.DrawString(s, f, br, x, y);
+        }
+        static void Fill(Graphics g, Color c, int x, int y, int w, int h) {
+            using (var br = new SolidBrush(c)) g.FillRectangle(br, x, y, w, h);
+        }
+        static void Line(Graphics g, Color c, int x1, int y1, int x2, int y2) {
+            using (var p = new Pen(c, 1)) g.DrawLine(p, x1, y1, x2, y2);
+        }
+
+        // dataStr: name|ahkMs|csMs|ok ; ...   (ahkMs = -1 -> not benchmarked, ok = 0 -> results mismatched)
         public static string Render(string dataStr, int w, int h, string path) {
+            var inv = CultureInfo.InvariantCulture;
             var items = new List<string[]>();
             foreach (var it in dataStr.Split(new[]{';'}, StringSplitOptions.RemoveEmptyEntries))
                 items.Add(it.Split('|'));
@@ -166,97 +203,106 @@ class ChartImg extends _CSModule {
                 int pad = 16;
                 int cw = w - pad * 2;
 
-                // Title
-                var fTitle = new Font("Segoe UI", 14, FontStyle.Bold);
-                var fSub = new Font("Segoe UI", 8.5f);
-                var fLabel = new Font("Segoe UI", 10, FontStyle.Bold);
-                var fTime = new Font("Cascadia Mono", 7.5f);
-                var fSpd = new Font("Segoe UI", 11, FontStyle.Bold);
-                var fLeg = new Font("Segoe UI", 7.5f);
+                Font fTitle = null, fSub = null, fLabel = null, fTime = null, fSpd = null, fLeg = null;
+                try {
+                    fTitle = new Font("Segoe UI", 14, FontStyle.Bold);
+                    fSub = new Font("Segoe UI", 8.5f);
+                    fLabel = new Font("Segoe UI", 10, FontStyle.Bold);
+                    fTime = new Font("Cascadia Mono", 7.5f);
+                    fSpd = new Font("Segoe UI", 11, FontStyle.Bold);
+                    fLeg = new Font("Segoe UI", 7.5f);
 
-                int y = pad;
-                g.DrawString("\u26A1 SPEEDUP CHART", fTitle, new SolidBrush(Accent), pad, y);
-                y += 24;
-                g.DrawString("Log scale \u2022 Bar = C# speed advantage over native AHK", fSub, new SolidBrush(Dim), pad, y);
-                y += 18;
+                    int y = pad;
+                    Txt(g, "⚡ SPEEDUP CHART", fTitle, Accent, pad, y);
+                    y += 24;
+                    Txt(g, "Log scale • Bar = C# speed advantage over native AHK • median of 3 runs", fSub, Dim, pad, y);
+                    y += 18;
 
-                g.DrawLine(new Pen(Color.FromArgb(40, 40, 60), 1), pad, y, pad + cw, y);
-                y += 6;
+                    Line(g, Color.FromArgb(40, 40, 60), pad, y, pad + cw, y);
+                    y += 6;
 
-                // Calculate bar sizing to fill available space
-                int legendH = 24;
-                int availH = h - y - legendH - pad;
-                int barH = Math.Max(availH / items.Count - 3, 16);
-                int gap = 3;
-                int labelW = (int)(cw * 0.20);
-                int barLeft = pad + labelW;
-                int barArea = cw - labelW - 65;
+                    // Calculate bar sizing to fill available space
+                    int legendH = 24;
+                    int availH = h - y - legendH - pad;
+                    int barH = Math.Max(availH / items.Count - 3, 16);
+                    int gap = 3;
+                    int labelW = (int)(cw * 0.20);
+                    int barLeft = pad + labelW;
+                    int barArea = cw - labelW - 65;
 
-                // Max ratio for log scale
-                double maxR = 1;
-                foreach (var it in items) {
-                    int a = int.Parse(it[1]), c = int.Parse(it[2]);
-                    if (a > 0) { double r = (double)Math.Max(a,1) / Math.Max(c,1); if (r > maxR) maxR = r; }
-                }
-                double logMax = Math.Log10(Math.Max(maxR, 10));
-
-                for (int i = 0; i < items.Count; i++) {
-                    var it = items[i];
-                    int ahk = int.Parse(it[1]), cs = int.Parse(it[2]);
-                    double ratio = ahk == -1 ? -1 : (double)Math.Max(ahk,1) / Math.Max(cs,1);
-
-                    // Label
-                    g.DrawString(it[0], fLabel, new SolidBrush(White), pad, y + 2);
-
-                    g.FillRectangle(new SolidBrush(Color.FromArgb(22, 22, 42)), barLeft, y, barArea, barH);
-
-                    if (ratio < 0) {
-                        using (var pb = new LinearGradientBrush(new Rectangle(barLeft, y, barArea, barH),
-                            Color.FromArgb(130, 55, 190), Color.FromArgb(80, 30, 140), 0f))
-                            g.FillRectangle(pb, barLeft, y, barArea, barH);
-                        g.DrawString("NO AHK EQUIVALENT", fLabel, new SolidBrush(Color.FromArgb(210, 180, 250)),
-                            barLeft + 6, y + 2);
-                        g.DrawString("\u221E", fSpd, new SolidBrush(Color.FromArgb(190, 150, 240)),
-                            barLeft + barArea + 8, y + 1);
-                    } else {
-                        double logR = Math.Log10(Math.Max(ratio, 1));
-                        int bw = (int)Math.Max(logR / logMax * barArea, 3);
-                        Color clr = BarColor(ratio);
-
-                        if (bw > 2) {
-                            Color clr2 = Color.FromArgb(clr.R*3/4, clr.G*3/4, clr.B*3/4);
-                            using (var bb = new LinearGradientBrush(new Rectangle(barLeft, y, bw+1, barH), clr, clr2, 0f))
-                                g.FillRectangle(bb, barLeft, y, bw, barH);
-                            using (var gp = new Pen(Color.FromArgb(100, clr), 1))
-                                g.DrawLine(gp, barLeft, y, barLeft + bw, y);
-                        }
-                        string tl = ahk + " vs " + cs + "ms";
-                        g.DrawString(tl, fTime, new SolidBrush(Color.FromArgb(140, 145, 165)),
-                            barLeft + 4, y + barH - 12);
-                        g.DrawString(Math.Round(ratio, 1) + "x", fSpd, new SolidBrush(clr),
-                            barLeft + barArea + 6, y + 1);
+                    // Max ratio for log scale
+                    double maxR = 1;
+                    foreach (var it in items) {
+                        double a = double.Parse(it[1], inv), c = double.Parse(it[2], inv);
+                        if (a >= 0 && it[3] == "1") { double r = Math.Max(a, 0.001) / Math.Max(c, 0.001); if (r > maxR) maxR = r; }
                     }
-                    y += barH + gap;
+                    double logMax = Math.Log10(Math.Max(maxR, 10));
+
+                    for (int i = 0; i < items.Count; i++) {
+                        var it = items[i];
+                        double ahk = double.Parse(it[1], inv), cs = double.Parse(it[2], inv);
+                        bool ok = it[3] == "1";
+                        double ratio = ahk < 0 ? -1 : Math.Max(ahk, 0.001) / Math.Max(cs, 0.001);
+
+                        // Label
+                        Txt(g, it[0], fLabel, White, pad, y + 2);
+
+                        Fill(g, Color.FromArgb(22, 22, 42), barLeft, y, barArea, barH);
+
+                        if (ratio < 0) {
+                            using (var pb = new LinearGradientBrush(new Rectangle(barLeft, y, barArea, barH),
+                                Color.FromArgb(130, 55, 190), Color.FromArgb(80, 30, 140), 0f))
+                                g.FillRectangle(pb, barLeft, y, barArea, barH);
+                            Txt(g, "NOT BENCHMARKED", fLabel, Color.FromArgb(210, 180, 250), barLeft + 6, y + 2);
+                            Txt(g, "n/b", fSpd, Color.FromArgb(190, 150, 240), barLeft + barArea + 8, y + 1);
+                        } else if (!ok) {
+                            Fill(g, Color.FromArgb(90, 25, 25), barLeft, y, barArea, barH);
+                            Txt(g, "RESULT MISMATCH - not compared", fLabel, Color.FromArgb(255, 150, 150), barLeft + 6, y + 2);
+                            Txt(g, "!", fSpd, Color.FromArgb(255, 100, 100), barLeft + barArea + 8, y + 1);
+                        } else {
+                            double logR = Math.Log10(Math.Max(ratio, 1));
+                            int bw = (int)Math.Max(logR / logMax * barArea, 3);
+                            Color clr = BarColor(ratio);
+
+                            if (bw > 2) {
+                                Color clr2 = Color.FromArgb(clr.R*3/4, clr.G*3/4, clr.B*3/4);
+                                using (var bb = new LinearGradientBrush(new Rectangle(barLeft, y, bw+1, barH), clr, clr2, 0f))
+                                    g.FillRectangle(bb, barLeft, y, bw, barH);
+                                Line(g, Color.FromArgb(100, clr), barLeft, y, barLeft + bw, y);
+                            }
+                            string tl = ahk.ToString("F1", inv) + " vs " + cs.ToString("F1", inv) + "ms";
+                            Txt(g, tl, fTime, Color.FromArgb(140, 145, 165), barLeft + 4, y + barH - 12);
+                            Txt(g, ratio.ToString("F1", inv) + "x", fSpd, clr, barLeft + barArea + 6, y + 1);
+                        }
+                        y += barH + gap;
+                    }
+
+                    // Legend
+                    y = h - legendH - pad / 2;
+                    Line(g, Color.FromArgb(40, 40, 60), pad, y, pad + cw, y);
+                    y += 5;
+                    int lsz = 10;
+                    Action<int, Color, string> lg = (lx, cl, tx) => {
+                        Fill(g, cl, lx, y + 2, lsz, lsz);
+                        Txt(g, tx, fLeg, Dim, lx + lsz + 4, y + 1);
+                    };
+                    int stp = cw / 5;
+                    lg(pad, Color.FromArgb(0,255,120), ">100x");
+                    lg(pad+stp, Color.FromArgb(0,220,180), "20-100x");
+                    lg(pad+stp*2, Color.FromArgb(80,180,255), "5-20x");
+                    lg(pad+stp*3, Color.FromArgb(255,200,80), "1-5x");
+                    lg(pad+stp*4, Color.FromArgb(130,55,190), "not benchmarked");
+
+                    bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                    return "ok";
+                } finally {
+                    if (fTitle != null) fTitle.Dispose();
+                    if (fSub != null) fSub.Dispose();
+                    if (fLabel != null) fLabel.Dispose();
+                    if (fTime != null) fTime.Dispose();
+                    if (fSpd != null) fSpd.Dispose();
+                    if (fLeg != null) fLeg.Dispose();
                 }
-
-                // Legend
-                y = h - legendH - pad / 2;
-                g.DrawLine(new Pen(Color.FromArgb(40, 40, 60), 1), pad, y, pad + cw, y);
-                y += 5;
-                int lsz = 10;
-                Action<int, Color, string> lg = (lx, cl, tx) => {
-                    g.FillRectangle(new SolidBrush(cl), lx, y + 2, lsz, lsz);
-                    g.DrawString(tx, fLeg, new SolidBrush(Dim), lx + lsz + 4, y + 1);
-                };
-                int stp = cw / 5;
-                lg(pad, Color.FromArgb(0,255,120), ">100x");
-                lg(pad+stp, Color.FromArgb(0,220,180), "20-100x");
-                lg(pad+stp*2, Color.FromArgb(80,180,255), "5-20x");
-                lg(pad+stp*3, Color.FromArgb(255,200,80), "1-5x");
-                lg(pad+stp*4, Color.FromArgb(130,55,190), "N/A");
-
-                bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
-                return "ok";
             }
         }
     )"
@@ -339,56 +385,133 @@ PadR(s, w) {
         s := " " s
     return SubStr(s, -w+1)
 }
+FmtMs(ms) => ms >= 100 ? String(Round(ms)) : Format("{:.1f}", ms)
 
 ; ══════════════════════════════════════════════════════════════════════════════
-; BENCHMARK RUNNER
+; Timing / comparison helpers
 ; ══════════════════════════════════════════════════════════════════════════════
 
-RunAll() {
-    results := []
-    total := 17
-    btnRun.Enabled := false
-
-    S(msg) {
-        statusText.Value := msg
-        Sleep(1)
+; High-resolution timestamp in milliseconds (QueryPerformanceCounter)
+QPCms() {
+    static freq := 0
+    if !freq {
+        DllCall("QueryPerformanceFrequency", "Int64*", &f := 0)
+        freq := f
     }
+    DllCall("QueryPerformanceCounter", "Int64*", &c := 0)
+    return c * 1000.0 / freq
+}
 
-    ; ─── 1 ──
-    S("[1/" total "] Sum 1..10M")
-    t := A_TickCount, sum := 0
+Median(arr) {
+    sorted := []
+    for v in arr {
+        pos := sorted.Length + 1
+        while pos > 1 && sorted[pos - 1] > v
+            pos--
+        sorted.InsertAt(pos, v)
+    }
+    n := sorted.Length
+    return Mod(n, 2) ? sorted[(n + 1) // 2] : (sorted[n // 2] + sorted[n // 2 + 1]) / 2
+}
+
+; Integers must match exactly; floating point results within 1e-9 (relative); anything else as strings.
+SameResult(a, b) {
+    if Type(a) == "String" && Type(b) == "String"
+        return a == b                  ; e.g. hex digests, replaced text (case-sensitive)
+    if IsInteger(a) && IsInteger(b)
+        return Integer(a) = Integer(b)
+    if IsNumber(a) && IsNumber(b)
+        return Abs(a - b) <= 1e-9 * Max(1, Abs(a), Abs(b))
+    return String(a) == String(b)
+}
+
+; Run one test: C# warm-up, then median of 3 timed runs each for C# and AHK.
+RunOne(tst) {
+    r := {name: tst.name, ahk: -1, cs: 0, ok: 0, note: ""}
+    ; Copy the callables into locals: obj.prop() would pass the object as an extra first argument
+    csFn := tst.cs, ahkFn := tst.ahk
+
+    csFn()                                     ; warm-up: JIT + bridge binding, not timed
+    times := [], csVal := ""
+    Loop 3 {
+        t0 := QPCms()
+        csVal := csFn()
+        times.Push(QPCms() - t0)
+    }
+    r.cs := Median(times)
+
+    try {
+        times := [], ahkVal := ""
+        Loop 3 {
+            t0 := QPCms()
+            ahkVal := ahkFn()
+            times.Push(QPCms() - t0)
+        }
+        r.ahk := Median(times)
+        r.ok := SameResult(ahkVal, csVal) ? 1 : 0
+        if !r.ok
+            r.note := "AHK=" ahkVal "  C#=" csVal
+    } catch as e {
+        r.ahk := -1
+        r.note := "AHK side not run: " e.Message
+    }
+    return r
+}
+
+; ══════════════════════════════════════════════════════════════════════════════
+; Shared test data (built once, outside the timed regions)
+; ══════════════════════════════════════════════════════════════════════════════
+
+gRegexText := ""
+Loop 5000
+    gRegexText .= "Line " A_Index " user" A_Index "@example.com`n"
+
+gStrText := "the quick brown fox jumps over the lazy dog and the cat sat on the mat"
+
+gWordText := ""
+wds := ["alpha","bravo","charlie","delta","echo","foxtrot","golf","hotel"]
+wSeed := 42
+Loop 50000 {
+    wSeed := Mod(wSeed * 1103515245 + 12345, 2147483648)
+    gWordText .= wds[Mod(wSeed, wds.Length) + 1] " "
+}
+
+gParseText := ""
+Loop 50000
+    gParseText .= "Line " A_Index " data here`n"
+
+; ══════════════════════════════════════════════════════════════════════════════
+; AHK implementations — each returns a result that is compared against the C# one
+; ══════════════════════════════════════════════════════════════════════════════
+
+AhkSum() {
+    sum := 0
     Loop 10000000
         sum += A_Index
-    ahk1 := A_TickCount - t
-    t := A_TickCount
-    CSBench.SumTo(10000000)
-    cs1 := A_TickCount - t
-    results.Push({name: "Sum 1..10M", ahk: ahk1, cs: cs1})
+    return sum
+}
 
-    ; ─── 2 ──
-    S("[2/" total "] Primes ≤500K")
-    t := A_TickCount, ahkP := 0
-    Loop 499999 {
-        nn := A_Index + 1, isPrime := true, dd := 2
-        while dd * dd <= nn {
-            if Mod(nn, dd) == 0 {
-                isPrime := false
-                break
+; Sieve of Eratosthenes - the same algorithm as CSBench.CountPrimes (byte array instead of trial division)
+AhkPrimes() {
+    limit := 500000
+    sieve := Buffer(limit + 1, 0)
+    c := 0
+    Loop limit - 1 {
+        i := A_Index + 1
+        if !NumGet(sieve, i, "UChar") {
+            c++
+            j := i * i
+            while j <= limit {
+                NumPut("UChar", 1, sieve, j)
+                j += i
             }
-            dd++
         }
-        if isPrime
-            ahkP++
     }
-    ahk2 := A_TickCount - t
-    t := A_TickCount
-    CSBench.CountPrimes(500000)
-    cs2 := A_TickCount - t
-    results.Push({name: "Primes ≤500K", ahk: ahk2, cs: cs2})
+    return c
+}
 
-    ; ─── 3 ──
-    S("[3/" total "] Fib(70)×10K")
-    t := A_TickCount
+AhkFibRepeat() {
+    total := 0
     Loop 10000 {
         fA := 0, fB := 1
         Loop 70 {
@@ -396,39 +519,50 @@ RunAll() {
             fA := fB
             fB := tmp
         }
+        total += fA
     }
-    ahk3 := A_TickCount - t
-    t := A_TickCount
+    return total
+}
+CsFibRepeat() {
+    total := 0
     Loop 10000
-        CSBench.Fibonacci(70)
-    cs3 := A_TickCount - t
-    results.Push({name: "Fib(70)×10K", ahk: ahk3, cs: cs3})
+        total += CSBench.Fibonacci(70)   ; 10,000 bridge calls on purpose
+    return total
+}
 
-    ; ─── 4 ──
-    S("[4/" total "] SHA256 ×10K")
-    t := A_TickCount
-    CSBench.HashRepeat("AHK# benchmark", 10000)
-    cs4 := A_TickCount - t
-    results.Push({name: "SHA256 ×10K", ahk: -1, cs: cs4})
+; SHA-256 chain through the native CNG API (BCryptHash, Windows 10+)
+AhkSha256() {
+    if DllCall("bcrypt\BCryptOpenAlgorithmProvider", "Ptr*", &hAlg := 0, "WStr", "SHA256", "Ptr", 0, "UInt", 0, "UInt") != 0
+        throw Error("BCrypt SHA256 provider unavailable")
+    try {
+        input := "AHK# benchmark"
+        len := StrPut(input, "UTF-8") - 1
+        cur := Buffer(Max(len + 1, 32))
+        StrPut(input, cur, "UTF-8")
+        nxt := Buffer(32)
+        Loop 10000 {
+            if DllCall("bcrypt\BCryptHash", "Ptr", hAlg, "Ptr", 0, "UInt", 0, "Ptr", cur, "UInt", len, "Ptr", nxt, "UInt", 32, "UInt") != 0
+                throw Error("BCryptHash failed (requires Windows 10 or later)")
+            tmp := cur, cur := nxt, nxt := tmp
+            len := 32
+        }
+        hex := ""
+        Loop 32
+            hex .= Format("{:02x}", NumGet(cur, A_Index - 1, "UChar"))
+        return hex
+    } finally {
+        DllCall("bcrypt\BCryptCloseAlgorithmProvider", "Ptr", hAlg, "UInt", 0)
+    }
+}
 
-    ; ─── 5 ──
-    S("[5/" total "] Regex 5K lines")
-    testText := ""
-    Loop 5000
-        testText .= "Line " A_Index " user" A_Index "@example.com`n"
-    t := A_TickCount
-    ahkR := 0, pos := 1
-    while RegExMatch(testText, "\b[\w.]+@[\w]+\.[\w]+\b", &m, pos)
-        ahkR++, pos := m.Pos + m.Len
-    ahk5 := A_TickCount - t
-    t := A_TickCount
-    CSBench.RegexExtract(testText)
-    cs5 := A_TickCount - t
-    results.Push({name: "Regex 5K", ahk: ahk5, cs: cs5})
+AhkRegex() {
+    count := 0, pos := 1
+    while RegExMatch(gRegexText, "\b[\w.]+@[\w]+\.[\w]+\b", &m, pos)
+        count++, pos := m.Pos + m.Len
+    return count
+}
 
-    ; ─── 6 ──
-    S("[6/" total "] CSV 5K×20")
-    t := A_TickCount
+AhkCsv() {
     csv := ""
     Loop 5000 {
         row := "", rr := A_Index
@@ -439,52 +573,39 @@ RunAll() {
         }
         csv .= row "`n"
     }
-    ahk6 := A_TickCount - t
-    csv := ""
-    t := A_TickCount
-    CSBench.BuildCSV(5000, 20)
-    cs6 := A_TickCount - t
-    results.Push({name: "CSV 5K×20", ahk: ahk6, cs: cs6})
+    return StrLen(csv)
+}
 
-    ; ─── 7 ──
-    S("[7/" total "] Sort 100K")
-    t := A_TickCount
-    CSBench.SortArray(100000)
-    cs7 := A_TickCount - t
-    results.Push({name: "Sort 100K", ahk: -1, cs: cs7})
+; Same LCG data as CSBench.SortArray; AHK's idiomatic sort is Sort() on a delimited string
+AhkSort() {
+    seed := 42, s := ""
+    Loop 100000 {
+        seed := Mod(seed * 1103515245 + 12345, 2147483648)
+        s .= (A_Index > 1 ? "`n" : "") seed
+    }
+    s := Sort(s, "N")
+    return Integer(SubStr(s, 1, InStr(s, "`n") - 1))
+}
 
-    ; ─── 8 ──
-    S("[8/" total "] Pi 10M terms")
-    t := A_TickCount
+AhkPi() {
     pi := 0.0
     Loop 10000000 {
         ii := A_Index - 1
         pi += (Mod(ii, 2) == 0 ? 1.0 : -1.0) / (2 * ii + 1)
     }
-    ahk8 := A_TickCount - t
-    t := A_TickCount
-    CSBench.ComputePi(10000000)
-    cs8 := A_TickCount - t
-    results.Push({name: "Pi 10M", ahk: ahk8, cs: cs8})
+    return pi * 4
+}
 
-    ; ─── 9 ──
-    S("[9/" total "] StrReplace ×1K")
-    testStr := "the quick brown fox jumps over the lazy dog and the cat sat on the mat"
-    t := A_TickCount
-    ss := testStr
+AhkStrReplace() {
+    ss := gStrText
     Loop 1000
-        ss := StrReplace(StrReplace(ss, "the", "THE"), "THE", "the")
-    ahk9 := A_TickCount - t
-    t := A_TickCount
-    CSBench.StringReplace(testStr, 1000)
-    cs9 := A_TickCount - t
-    results.Push({name: "StrReplace ×1K", ahk: ahk9, cs: cs9})
+        ss := StrReplace(StrReplace(ss, "the", "THE", true), "THE", "the", true)   ; CaseSense=true == ordinal
+    return ss
+}
 
-    ; ─── 10 ──
-    S("[10/" total "] Collatz <100K")
-    t := A_TickCount
+AhkCollatz() {
     maxChain := 0
-    Loop 99999 {
+    Loop 99998 {                       ; n = 2 .. 99999, same range as CSBench.CollatzMax(100000)
         nn := A_Index + 1, steps := 0, xx := nn
         while xx != 1 {
             xx := Mod(xx, 2) == 0 ? xx // 2 : 3 * xx + 1
@@ -493,82 +614,70 @@ RunAll() {
         if steps > maxChain
             maxChain := steps
     }
-    ahk10 := A_TickCount - t
-    t := A_TickCount
-    CSBench.CollatzMax(100000)
-    cs10 := A_TickCount - t
-    results.Push({name: "Collatz <100K", ahk: ahk10, cs: cs10})
+    return maxChain
+}
 
-    ; ─── 11 ──
-    S("[11/" total "] WordFreq 50K")
-    wordText := ""
-    wds := ["alpha","bravo","charlie","delta","echo","foxtrot","golf","hotel"]
-    wSeed := 42
-    Loop 50000 {
-        wSeed := Mod(wSeed * 1103515245 + 12345, 2147483648)
-        wordText .= wds[Mod(wSeed, wds.Length) + 1] " "
-    }
-    t := A_TickCount
+AhkWordFreq() {
     freq := Map()
-    Loop Parse, wordText, " " {
+    Loop Parse, gWordText, " " {
         if A_LoopField == ""
             continue
         ww := StrLower(A_LoopField)
         freq[ww] := freq.Has(ww) ? freq[ww] + 1 : 1
     }
-    ahk11 := A_TickCount - t
-    t := A_TickCount
-    CSBench.WordFrequency(wordText)
-    cs11 := A_TickCount - t
-    results.Push({name: "WordFreq 50K", ahk: ahk11, cs: cs11})
+    return freq.Count * 100000 + (freq.Has("alpha") ? freq["alpha"] : 0)
+}
 
-    ; ─── 12 ──
-    S("[12/" total "] Matrix 100×100")
-    t := A_TickCount
-    CSBench.MatrixMultiply(100)
-    cs12 := A_TickCount - t
-    results.Push({name: "Matrix 100²", ahk: -1, cs: cs12})
+; Same LCG data as CSBench.MatrixMultiply; returns the sum of all elements of A*B
+AhkMatrix() {
+    size := 100
+    seed := 42
+    a := [], b := []
+    Loop size {
+        ra := [], rb := []
+        Loop size {
+            seed := Mod(seed * 1103515245 + 12345, 2147483648)
+            ra.Push(seed / 2147483648)
+            seed := Mod(seed * 1103515245 + 12345, 2147483648)
+            rb.Push(seed / 2147483648)
+        }
+        a.Push(ra), b.Push(rb)
+    }
+    total := 0.0
+    Loop size {
+        ai := a[A_Index]
+        Loop size {
+            j := A_Index
+            s := 0.0
+            Loop size
+                s += ai[A_Index] * b[A_Index][j]
+            total += s
+        }
+    }
+    return total
+}
 
-    ; ══════════════════════════════════════════════════════════════════
-    ; AHK STRENGTH TESTS — where AHK is competitive or wins!
-    ; ══════════════════════════════════════════════════════════════════
-
-    ; ─── 13 ── Map Insert/Lookup 100K (AHK Map is C++ backed)
-    S("[13/" total "] Map 100K ops")
-    t := A_TickCount
+AhkMap() {
     myMap := Map()
     Loop 100000
         myMap["key" A_Index] := A_Index
     mapSum := 0
     Loop 100000
         mapSum += myMap["key" A_Index]
-    ahk13 := A_TickCount - t
-    t := A_TickCount
-    CSBench.MapInsertLookup(100000)
-    cs13 := A_TickCount - t
-    results.Push({name: "Map 100K", ahk: ahk13, cs: cs13})
+    return mapSum
+}
 
-    ; ─── 14 ── Loop Parse 50K lines (AHK's native parser)
-    S("[14/" total "] Parse 50K lines")
-    parseText := ""
-    Loop 50000
-        parseText .= "Line " A_Index " data here`n"
-    t := A_TickCount
+AhkParse() {
     lineCount := 0
-    Loop Parse, parseText, "`n" {
+    Loop Parse, gParseText, "`n" {
         if A_LoopField != ""
             lineCount++
     }
-    ahk14 := A_TickCount - t
-    t := A_TickCount
-    CSBench.ParseLines(parseText)
-    cs14 := A_TickCount - t
-    results.Push({name: "Parse 50K ln", ahk: ahk14, cs: cs14})
+    return lineCount
+}
 
-    ; ─── 15 ── Small Regex ×10K (AHK PCRE is blazing)
-    S("[15/" total "] SmallRegex ×10K")
+AhkSmallRegex() {
     rxText := "abc 123 def 456 ghi 789 jkl 012"
-    t := A_TickCount
     rxTotal := 0
     Loop 10000 {
         rxPos := 1
@@ -577,30 +686,20 @@ RunAll() {
             rxPos := rxM.Pos + rxM.Len
         }
     }
-    ahk15 := A_TickCount - t
-    t := A_TickCount
-    CSBench.SmallRegex(rxText, 10000)
-    cs15 := A_TickCount - t
-    results.Push({name: "SmallRx ×10K", ahk: ahk15, cs: cs15})
+    return rxTotal
+}
 
-    ; ─── 16 ── Array Build 100K (AHK arrays are C++ backed)
-    S("[16/" total "] Array 100K")
-    t := A_TickCount
+AhkArray() {
     arr := []
     Loop 100000
         arr.Push(A_Index * 3 + 7)
     arrSum := 0
     for val in arr
         arrSum += val
-    ahk16 := A_TickCount - t
-    t := A_TickCount
-    CSBench.ArrayBuild(100000)
-    cs16 := A_TickCount - t
-    results.Push({name: "Array 100K", ahk: ahk16, cs: cs16})
+    return arrSum
+}
 
-    ; ─── 17 ── Simple Conditionals 10M (interpreter overhead test)
-    S("[17/" total "] Conditionals 10M")
-    t := A_TickCount
+AhkConditionals() {
     cndSum := 0
     Loop 10000000 {
         ii := A_Index
@@ -614,43 +713,107 @@ RunAll() {
             cndSum += ii
         }
     }
-    ahk17 := A_TickCount - t
-    t := A_TickCount
-    CSBench.Conditionals(10000000)
-    cs17 := A_TickCount - t
-    results.Push({name: "Cond 10M", ahk: ahk17, cs: cs17})
+    return cndSum
+}
+
+BuildTests() {
+    return [
+        {name: "Sum 1..10M",     ahk: AhkSum,          cs: () => CSBench.SumTo(10000000)},
+        {name: "Primes ≤500K",   ahk: AhkPrimes,       cs: () => CSBench.CountPrimes(500000)},
+        {name: "Fib(70)×10K",    ahk: AhkFibRepeat,    cs: CsFibRepeat},
+        {name: "SHA256 ×10K",    ahk: AhkSha256,       cs: () => CSBench.HashRepeat("AHK# benchmark", 10000)},
+        {name: "Regex 5K",       ahk: AhkRegex,        cs: () => CSBench.RegexExtract(gRegexText)},
+        {name: "CSV 5K×20",      ahk: AhkCsv,          cs: () => CSBench.BuildCSV(5000, 20)},
+        {name: "Sort 100K",      ahk: AhkSort,         cs: () => CSBench.SortArray(100000)},
+        {name: "Pi 10M",         ahk: AhkPi,           cs: () => CSBench.ComputePi(10000000)},
+        {name: "StrReplace ×1K", ahk: AhkStrReplace,   cs: () => CSBench.StringReplace(gStrText, 1000)},
+        {name: "Collatz <100K",  ahk: AhkCollatz,      cs: () => CSBench.CollatzMax(100000)},
+        {name: "WordFreq 50K",   ahk: AhkWordFreq,     cs: () => CSBench.WordFrequency(gWordText)},
+        {name: "Matrix 100²",    ahk: AhkMatrix,       cs: () => CSBench.MatrixMultiply(100)},
+        {name: "Map 100K",      ahk: AhkMap,          cs: () => CSBench.MapInsertLookup(100000)},
+        {name: "Parse 50K ln",   ahk: AhkParse,        cs: () => CSBench.ParseLines(gParseText)},
+        {name: "SmallRx ×10K",   ahk: AhkSmallRegex,   cs: () => CSBench.SmallRegex("abc 123 def 456 ghi 789 jkl 012", 10000)},
+        {name: "Array 100K",     ahk: AhkArray,        cs: () => CSBench.ArrayBuild(100000)},
+        {name: "Cond 10M",       ahk: AhkConditionals, cs: () => CSBench.Conditionals(10000000)}
+    ]
+}
+
+; ══════════════════════════════════════════════════════════════════════════════
+; BENCHMARK RUNNER
+; ══════════════════════════════════════════════════════════════════════════════
+
+SetStatus(msg) {
+    statusText.Value := msg
+    Sleep(1)
+}
+
+RunAll() {
+    global lastChartData
+    tests := BuildTests()
+    total := tests.Length
+    results := []
+    btnRun.Enabled := false
+
+    try {
+        for idx, tst in tests {
+            SetStatus("[" idx "/" total "] " tst.name " (warm-up + 3 runs)")
+            results.Push(RunOne(tst))
+        }
+    } catch as e {
+        btnRun.Enabled := true
+        SetStatus("Benchmark failed: " e.Message)
+        MsgBox("Benchmark aborted:`n`n" e.Message, "AHK# Speed Benchmark", "Icon!")
+        return
+    }
 
     ; ══════════════════════════════════════════════════════════════════
     ; Build table text (Tab 2)
     ; ══════════════════════════════════════════════════════════════════
-    S("Rendering...")
+    SetStatus("Rendering...")
 
     hdr := " " Pad("BENCHMARK", 16) " │ " PadR("AHK", 8) " │ " PadR("C#", 8) " │ " PadR("SPEEDUP", 9) " │ OK"
     sep := " " Pad("────────────────", 16) " ┼ " PadR("────────", 8) " ┼ " PadR("────────", 8) " ┼ " PadR("─────────", 9) " ┼ ──"
     tbl := "═══════════════════════════════════════════════════════════`n"
-    tbl .= "  ⚡ AHK# MEGA SPEED BENCHMARK — 17 Tests`n"
+    tbl .= "  ⚡ AHK# MEGA SPEED BENCHMARK — " total " Tests`n"
     tbl .= "═══════════════════════════════════════════════════════════`n`n"
     tbl .= hdr "`n" sep "`n"
 
-    totalAhk := 0, totalCs := 0
+    logSum := 0.0, compared := 0, mismatched := 0, notBenchmarked := 0
+    totalAhk := 0.0, totalCs := 0.0
+    notes := ""
     for r in results {
-        ahkStr := r.ahk >= 0 ? PadR(r.ahk "ms", 8) : PadR("N/A", 8)
-        csStr  := PadR(r.cs "ms", 8)
-        if (r.ahk == -1)
-            ratio := -1, spdStr := PadR("∞", 9)
-        else {
-            ratio := Round(Max(r.ahk, 1) / Max(r.cs, 1), 1)
-            spdStr := PadR(ratio "×", 9)
+        csStr := PadR(FmtMs(r.cs) "ms", 8)
+        if (r.ahk < 0) {
+            notBenchmarked++
+            tbl .= " " Pad(r.name, 16) " │ " PadR("n/b", 8) " │ " csStr " │ " PadR("not bench.", 9) " │ -`n"
+        } else if (!r.ok) {
+            mismatched++
+            tbl .= " " Pad(r.name, 16) " │ " PadR(FmtMs(r.ahk) "ms", 8) " │ " csStr " │ " PadR("—", 9) " │ ✗`n"
+        } else {
+            ratio := Max(r.ahk, 0.001) / Max(r.cs, 0.001)
+            logSum += Ln(ratio)
+            compared++
             totalAhk += r.ahk, totalCs += r.cs
+            tbl .= " " Pad(r.name, 16) " │ " PadR(FmtMs(r.ahk) "ms", 8) " │ " csStr " │ " PadR(Round(ratio, 1) "×", 9) " │ ✓`n"
         }
-        tbl .= " " Pad(r.name, 16) " │ " ahkStr " │ " csStr " │ " spdStr " │ ✓`n"
+        if (r.note != "")
+            notes .= "  * " r.name ": " r.note "`n"
     }
 
-    avgSpd := totalCs > 0 ? Round(totalAhk / totalCs, 1) : 0
+    geoMean := compared > 0 ? Round(Exp(logSum / compared), 1) : 0
     tbl .= sep "`n"
-    tbl .= " " Pad("TOTAL", 16) " │ " PadR(totalAhk "ms", 8) " │ " PadR(totalCs "ms", 8) " │ " PadR(avgSpd "×", 9) " │`n"
+    tbl .= " " Pad("TOTAL (checked)", 16) " │ " PadR(FmtMs(totalAhk) "ms", 8) " │ " PadR(FmtMs(totalCs) "ms", 8) " │ " PadR(geoMean "×", 9) " │`n"
     tbl .= "`n═══════════════════════════════════════════════════════════`n"
-    tbl .= "  Overall: C# via AHK# is " avgSpd "× faster across " total " tests`n"
+    tbl .= "  Geometric-mean speedup: C# via AHK# is " geoMean "× vs AHK`n"
+    tbl .= "  over " compared " tests with matching results"
+    if (mismatched)
+        tbl .= " (" mismatched " mismatched, excluded)"
+    if (notBenchmarked)
+        tbl .= " (" notBenchmarked " not benchmarked)"
+    tbl .= "`n  Timing: QueryPerformanceCounter, median of 3 runs, C# warmed up first.`n"
+    tbl .= "  C# times are in-process compute (one bridge call per run; Fib(70)×10K = 10K calls).`n"
+    if (notes != "")
+        tbl .= "`n  Notes:`n" notes
     tbl .= "═══════════════════════════════════════════════════════════"
 
     tableEdit.Value := tbl
@@ -662,11 +825,12 @@ RunAll() {
     for r in results {
         if chartData != ""
             chartData .= ";"
-        chartData .= r.name "|" r.ahk "|" r.cs
+        ahkTxt := r.ahk < 0 ? "-1" : String(Round(r.ahk, 3))
+        csTxt := String(Round(r.cs, 3))
+        chartData .= r.name "|" ahkTxt "|" csTxt "|" r.ok
     }
 
     ; Store globally for re-render on resize
-    global lastChartData
     lastChartData := chartData
 
     ; Get actual control dimensions
@@ -681,7 +845,8 @@ RunAll() {
     }
 
     btnRun.Enabled := true
-    statusText.Value := "Done — AHK " totalAhk "ms vs C# " totalCs "ms — C# is " avgSpd "× faster"
+    SetStatus("Done — geometric-mean speedup " geoMean "× over " compared " matching tests"
+        . (mismatched ? " (" mismatched " mismatched)" : ""))
 }
 
 g.Show("w700 h620")

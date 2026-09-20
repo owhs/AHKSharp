@@ -32,11 +32,33 @@ class FileAnalyzer extends _CSModule {
             sb.AppendLine("MODIFIED|" + fi.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss"));
             sb.AppendLine("READONLY|" + fi.IsReadOnly);
 
-            // Hashes
-            byte[] data = File.ReadAllBytes(path);
-            sb.AppendLine("MD5|" + HashBytes(MD5.Create(), data));
-            sb.AppendLine("SHA1|" + HashBytes(SHA1.Create(), data));
-            sb.AppendLine("SHA256|" + HashBytes(SHA256.Create(), data));
+            // Stream the file once (1 MB chunks) instead of File.ReadAllBytes, so multi-GB files
+            // neither exhaust memory nor hit the 2 GB array limit. Only the first 8 KB is kept
+            // in memory for the hex preview and text detection.
+            byte[] data = new byte[(int)Math.Min(fi.Length, 8192L)];
+            using (var md5 = MD5.Create())
+            using (var sha1 = SHA1.Create())
+            using (var sha256 = SHA256.Create())
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16)) {
+                byte[] buf = new byte[1 << 20];
+                int headFilled = 0, n;
+                while ((n = fs.Read(buf, 0, buf.Length)) > 0) {
+                    if (headFilled < data.Length) {
+                        int take = Math.Min(n, data.Length - headFilled);
+                        Array.Copy(buf, 0, data, headFilled, take);
+                        headFilled += take;
+                    }
+                    md5.TransformBlock(buf, 0, n, null, 0);
+                    sha1.TransformBlock(buf, 0, n, null, 0);
+                    sha256.TransformBlock(buf, 0, n, null, 0);
+                }
+                md5.TransformFinalBlock(new byte[0], 0, 0);
+                sha1.TransformFinalBlock(new byte[0], 0, 0);
+                sha256.TransformFinalBlock(new byte[0], 0, 0);
+                sb.AppendLine("MD5|" + HexString(md5.Hash));
+                sb.AppendLine("SHA1|" + HexString(sha1.Hash));
+                sb.AppendLine("SHA256|" + HexString(sha256.Hash));
+            }
 
             // Hex preview (first 256 bytes)
             int previewLen = Math.Min(data.Length, 256);
@@ -62,8 +84,9 @@ class FileAnalyzer extends _CSModule {
                 .All(b => b == 9 || b == 10 || b == 13 || (b >= 32 && b < 127) || b > 127);
             sb.AppendLine("ISTEXT|" + isText);
 
-            if (isText && data.Length < 100000) {
-                string content = Encoding.UTF8.GetString(data);
+            // Line/char stats only for small text files (the whole file is read here, so keep it capped)
+            if (isText && fi.Length < 100000) {
+                string content = Encoding.UTF8.GetString(File.ReadAllBytes(path));
                 int lines = content.Split('\n').Length;
                 int chars = content.Length;
                 sb.AppendLine("LINES|" + lines);
@@ -73,8 +96,8 @@ class FileAnalyzer extends _CSModule {
             return sb.ToString();
         }
 
-        static string HashBytes(HashAlgorithm ha, byte[] data) {
-            return BitConverter.ToString(ha.ComputeHash(data)).Replace("-", "").ToLower();
+        static string HexString(byte[] hash) {
+            return BitConverter.ToString(hash).Replace("-", "").ToLower();
         }
 
         static string FormatSize(long bytes) {

@@ -1,4 +1,4 @@
-﻿;; AHK# Example 31 — CS.Import: Namespace Aliasing
+﻿;; AHK# — CS.Import: Namespace Aliasing
 ;; Use CS.Import() to create short aliases for deeply-nested .NET namespaces.
 ;; This dramatically improves readability for repeated namespace access.
 
@@ -41,7 +41,13 @@ MsgBox(sb.ToString(), "AHK# — Text.StringBuilder")
 encoded := Text.Encoding.UTF8.GetBytes("AHK# v2.0")
 MsgBox("UTF8 byte count: " encoded.Length, "AHK# — Text.Encoding")
 
-; Hash with Crypto alias
+; Hash with Crypto alias: SHA-256 of the same UTF-8 bytes
+sha := Crypto.SHA256.Create()
+hash := sha.ComputeHash(encoded)
+hex := StrReplace(CS.System.BitConverter.ToString(hash), "-")
+sha.Dispose()
+MsgBox("SHA-256 of `"AHK# v2.0`":`n" hex, "AHK# — Crypto.SHA256")
+
 msg := "Multiple namespace aliases, all clean and readable!"
 MsgBox(msg, "AHK# — CS.Import Demo Complete", 0x40)
 

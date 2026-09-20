@@ -1,12 +1,13 @@
-﻿;; AHK# Example 10 — IPC: Messaging, Shared RAM, Batching & Parallelism
-;; Comprehensive demonstration of all SharedMemory / async / parallel capabilities.
+﻿;; AHK# — IPC: Messaging, Shared RAM, Batching & Parallelism
+;; Demonstrates the SharedMemory extension (ext\ahk#.ipc.ahk) plus async promises.
 ;;
 ;; Showcases:
-;;   1. Shared RAM — Direct memory-mapped read/write between processes
+;;   1. Shared RAM — Named memory-mapped buffer (other processes can open the same name)
 ;;   2. IPC Messaging — Structured message passing via shared buffers
 ;;   3. Batched IPC Calls — Bulk data transfer with offset addressing
-;;   4. Non-Blocking Parallelism — Async computation with CS.Fast & Promises
-;;   5. Pub/Sub Pattern — Polling-based reactive message listener
+;;   4. Non-Blocking Parallelism — Async computation with Promises
+;;   5. Change Notification — SharedMemory.OnChanged (a timer polls the buffer;
+;;      here publisher and subscriber are the same script/process)
 
 #Requires AutoHotkey v2.0
 #SingleInstance Force
@@ -65,7 +66,7 @@ out .= "═══ 1. SHARED RAM ═══`n"
 shm := SharedMemory("AhkSharp_Demo_RAM", 4096)
 
 ; Write a string — goes directly into kernel-managed shared memory
-shm.Write("AHK# shared RAM is blazing fast")
+shm.Write("AHK# shared RAM round-trip")
 readBack := shm.Read()
 out .= "  Write → Read: " readBack "`n"
 out .= "  Buffer capacity: " shm.Capacity " bytes`n"
@@ -135,7 +136,8 @@ out .= "  Offset 20: [PARAM1] " param1 "`n"
 out .= "  Offset 40: [PARAM2] " param2 "`n"
 out .= "  Offset 60: [STATUS] " status "`n"
 
-; Update just the status field (atomic partial write)
+; Update just the status field (a partial write: only those 14 bytes are touched;
+; it is not atomic, so real multi-process use needs its own locking)
 batch.WriteAt(60, "status=DONE   ")
 newStatus := batch.ReadAt(60, 14)
 out .= "  Updated status: " newStatus "`n"
@@ -143,7 +145,7 @@ out .= "  Updated status: " newStatus "`n"
 batch.Close()
 
 ; ══════════════════════════════════════════════════════════════════════════════
-; 4. NON-BLOCKING PARALLELISM — Async + CS.Fast
+; 4. NON-BLOCKING PARALLELISM — Async + Promises
 ; ══════════════════════════════════════════════════════════════════════════════
 
 out .= "`n═══ 4. NON-BLOCKING PARALLELISM ═══`n"
@@ -196,42 +198,35 @@ elapsed3 := A_TickCount - t3
 out .= "  FibSum(50) = " fibResult " (took " elapsed3 "ms)`n"
 
 ; ══════════════════════════════════════════════════════════════════════════════
-; 5. PUB/SUB PATTERN — Reactive Message Listener
+; 5. CHANGE NOTIFICATION — SharedMemory.OnChanged
 ; ══════════════════════════════════════════════════════════════════════════════
 
-out .= "`n═══ 5. PUB/SUB PATTERN ═══`n"
+out .= "`n═══ 5. CHANGE NOTIFICATION (OnChanged) ═══`n"
 
-; Create a shared channel and register a change listener
+; Create a shared channel and register a change listener. OnChanged polls the
+; buffer on a timer and calls back whenever its content differs from last time.
+; (Another process opening the same name would see the same buffer; in this demo
+; the publisher and the subscriber are both this script.)
 pubsub := SharedMemory("AhkSharp_PubSub", 4096)
 pubsub.Clear()
 
 ; Track received messages
 receivedMsgs := []
+pubsub.OnChanged((data) => receivedMsgs.Push(data), 25)
 
-; Simulate publishing 3 messages with delays
-pubsub.Write("event:user_login|user=alice")
-Sleep(10)
-data1 := pubsub.Read()
-if (data1 != "")
-    receivedMsgs.Push(data1)
+; Publish 3 events; each Sleep lets the polling timer run and deliver the change
+for event in ["event:user_login|user=alice"
+            , "event:file_saved|path=C:\data.txt"
+            , "event:task_done|result=success"] {
+    pubsub.Write(event)
+    Sleep(100)
+}
 
-pubsub.Write("event:file_saved|path=C:\data.txt")
-Sleep(10)
-data2 := pubsub.Read()
-if (data2 != "")
-    receivedMsgs.Push(data2)
-
-pubsub.Write("event:task_done|result=success")
-Sleep(10)
-data3 := pubsub.Read()
-if (data3 != "")
-    receivedMsgs.Push(data3)
-
-out .= "  Published 3 events, received " receivedMsgs.Length ":`n"
+out .= "  Published 3 events, OnChanged delivered " receivedMsgs.Length ":`n"
 for msg in receivedMsgs
     out .= "    → " msg "`n"
 
-pubsub.Close()
+; No pubsub.Close() here: the OnChanged timer keeps polling until the script exits.
 
 ; ══════════════════════════════════════════════════════════════════════════════
 ; Display Everything

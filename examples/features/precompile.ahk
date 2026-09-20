@@ -1,10 +1,13 @@
-﻿;; AHK# Example 33 — Precompile & Distribute
+﻿;; AHK# — Precompile & Distribute
 ;; Export compiled CSModule DLLs for distribution.
 ;; End users load precompiled DLLs — no csc.exe needed!
+;; (The DLL is written to your temp folder so nothing is added to the repo.)
 
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 #Include ..\..\lib\ahk#.ahk
+
+dllPath := A_Temp "\AHKSharp_TextProcessor.dll"
 
 ; ── Step 1: Define and compile a module normally ──────────────────────────────
 
@@ -57,16 +60,15 @@ MsgBox("Slug: " slug "`nWord count: " words "`nCapitalized: " caps
 
 ; ── Step 3: Precompile for distribution ───────────────────────────────────────
 
-outputPath := A_ScriptDir "\lib\TextProcessor.dll"
-TextProcessor.Precompile(outputPath)
-MsgBox("Exported to: " outputPath "`n`nThis DLL can be distributed to users who don't have csc.exe!"
+TextProcessor.Precompile(dllPath)
+MsgBox("Exported to: " dllPath "`n`nThis DLL can be distributed to users who don't have csc.exe!"
     , "AHK# — Precompiled")
 
 ; ── Step 4: Load from precompiled DLL (simulating distribution) ───────────────
 ; In a real distribution, the user would ONLY have this class — no CSharp source.
 
 class TextProcessorDistributed extends _CSModule {
-    static PrecompiledDLL := A_ScriptDir "\lib\TextProcessor.dll"
+    static PrecompiledDLL := dllPath
 }
 
 ; Test the precompiled version

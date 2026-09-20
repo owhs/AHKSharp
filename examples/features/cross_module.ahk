@@ -1,4 +1,4 @@
-﻿;; AHK# Example 32 — Cross-Module References
+﻿;; AHK# — Cross-Module References
 ;; One CSModule can reference another's compiled assembly.
 ;; This enables composable, reusable module architectures.
 

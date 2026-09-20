@@ -1,8 +1,9 @@
-﻿;; AHK# Example 27 — NuGet Package Manager
+﻿;; AHK# — NuGet Package Manager
 ;; Install packages from nuget.org and use them in CSModules.
 ;; Demonstrates: CS.NuGet.Install, CS.NuGet.Require, progress GUI
 ;;
-;; First run downloads Newtonsoft.Json (~300KB). Subsequent runs use cache.
+;; First run downloads Newtonsoft.Json (~300KB) and needs internet access.
+;; Subsequent runs use the local cache and work offline.
 
 #Requires AutoHotkey v2.0
 #SingleInstance Force
@@ -10,7 +11,19 @@
 
 ; ── Install Newtonsoft.Json via NuGet ─────────────────────────────────────────
 ; Shows a progress GUI during download, auto-closes when done.
-CS.NuGet.Install("Newtonsoft.Json", "13.0.3")
+; Install throws if the download fails (offline, proxy, nuget.org unreachable).
+if !CS.NuGet.IsInstalled("Newtonsoft.Json", "13.0.3") {
+    try {
+        CS.NuGet.Install("Newtonsoft.Json", "13.0.3")
+    } catch as e {
+        MsgBox("Could not download Newtonsoft.Json 13.0.3 from nuget.org.`n`n"
+            . "This demo needs an internet connection the first time it runs "
+            . "(about 300 KB); after that the package is cached and it works offline.`n`n"
+            . "Check your connection or proxy and run the script again.`n`n"
+            . "Details: " e.Message, "AHK# — NuGet unavailable", 0x30)
+        ExitApp()
+    }
+}
 
 ; ── Use it in a CSModule ──────────────────────────────────────────────────────
 class JsonHelper extends _CSModule {
