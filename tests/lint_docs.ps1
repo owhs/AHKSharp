@@ -39,6 +39,8 @@ foreach ($d in $docs) {
     foreach ($m in [regex]::Matches($text, '`((?:lib|src|ext|examples|tests|docs|workbench)[\\/][^`\s]*)`')) {
         $p = $m.Groups[1].Value.TrimEnd('\', '/', '.', ',')
         if ($p -match '[*<>{}]|\.\.\.') { continue }
+        # machine-written files that are git-ignored, so a fresh checkout (CI) does not have them
+        if ($p -in @('lib\.bridge_hash', 'lib/.bridge_hash', 'lib\ahk#.d.ahk', 'lib/ahk#.d.ahk')) { continue }
         if (-not (Test-Path (Join-Path $root $p))) { $problems += "$rel : path does not exist -> $p" }
     }
 
