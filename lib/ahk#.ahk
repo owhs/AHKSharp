@@ -191,12 +191,21 @@ class _AhkSharpEngine {
         OnMessage(this._WM_PUMP, ObjBindMethod(this, "_OnPump"))
     }
 
+    ; OnMessage sees these message numbers for EVERY window on the thread, and
+    ; returning a value swallows the message. WM_APP+n is used by other windows
+    ; too (the WebBrowser control's own navigation among them), so only the
+    ; receiver's messages are ours: anything else returns nothing and goes on
+    ; to its window untouched.
     static _OnPump(wParam, lParam, msg, hwnd) {
+        if (hwnd != this._callbackHwnd)
+            return
         try this._bridge.PumpCallbacks()
         return 0
     }
 
     static _OnAsyncComplete(wParam, lParam, msg, hwnd) {
+        if (hwnd != this._callbackHwnd)
+            return
         taskId := wParam
         if _CSPromise._pending.Has(taskId) {
             promise := _CSPromise._pending[taskId]
@@ -1910,6 +1919,8 @@ class _CSDelegate {
 
     ; One message = one queued event. _CSEventCallback reports handler errors itself.
     static _OnCallback(wParam, lParam, msg, hwnd) {
+        if (hwnd != _AhkSharpEngine._callbackHwnd)     ; another window's WM_APP+2 (see _OnPump)
+            return
         try _AhkSharpEngine.Boot().InvokeDelegate(wParam)
         return 0
     }
